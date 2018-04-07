@@ -7,13 +7,14 @@ Note that there are many checks and features that are omitted in this project th
 is meant to be a starting point!
 
 ## Tested On
-Windows 8.1 with version `1.1.70.1` of LunarG's Vulkan SDK.
+Windows 8.1, NVIDIA GeForce GTX 970M, v`1.1.70.1` Vulkan SDK.
 
 ## To Build
 1. Clone this repo.
 2. Inside the repo, create two new folders named `build` and `third_party`.
-3. Download the Vulkan SDK for Windows from LunarG's website.
-4. Download the GLFW pre-compiled binaries and place inside the `third_party` directory. Rename this folder to `glfw`.
+3. Download the [Vulkan SDK for Windows](https://vulkan.lunarg.com/sdk/home#windows). Make sure the `VK_SDK_PATH` environment
+   variable is defined.
+4. Download the [GLFW pre-compiled binaries](http://www.glfw.org/download.html) (64-bit Windows) and place inside the `third_party` directory. Rename this folder to `glfw`.
 5. Run `vkstarter/compile.bat` to convert the included `GLSL` shaders to `SPIR-V`.
 6. Open the Visual Studio 2015 solution file.
 7. Build the included project.
