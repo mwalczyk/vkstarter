@@ -254,7 +254,12 @@ public:
 		std::cout << "Successfully loaded shader modules\n";
 
 		// Then, create a pipeline layout
-		auto pipeline_layout = device->createPipelineLayoutUnique({ /* Add push constants and descriptor sets here */ });
+		auto push_constant_range = vk::PushConstantRange{ vk::ShaderStageFlagBits::eFragment, 0, sizeof(float) };
+		auto pipeline_layout_create_info = vk::PipelineLayoutCreateInfo{}
+			.setPPushConstantRanges(&push_constant_range)
+			.setPushConstantRangeCount(1);
+
+		pipeline_layout = device->createPipelineLayoutUnique(pipeline_layout_create_info /* Add additional push constants or descriptor sets here */ );
 
 		// Finally, create the pipeline
 		const char* entry_point = "main";
@@ -320,21 +325,26 @@ public:
 
 	void initialize_command_pool()
 	{
-		command_pool = device->createCommandPoolUnique(vk::CommandPoolCreateInfo{ {}, queue_family_index });
+		command_pool = device->createCommandPoolUnique(vk::CommandPoolCreateInfo{ vk::CommandPoolCreateFlagBits::eResetCommandBuffer, queue_family_index });
 	}
 
 	void initialize_command_buffers()
 	{
 		command_buffers = device->allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo{ command_pool.get(), vk::CommandBufferLevel::ePrimary, static_cast<uint32_t>(framebuffers.size()) });
 		std::cout << "Allocated [ " << command_buffers.size() << " ] command buffers\n";
+	}
 
+	void record_command_buffers()
+	{
 		const vk::ClearValue clear = std::array<float, 4>{ 0.15f, 0.15f, 0.15f, 1.0f };
 		const vk::Rect2D render_area{ { 0, 0 }, swapchain_extent };
+		float time = get_elapsed_time();
 		for (size_t i = 0; i < command_buffers.size(); ++i)
 		{	
 			command_buffers[i]->begin(vk::CommandBufferBeginInfo{ vk::CommandBufferUsageFlagBits::eSimultaneousUse });
 			command_buffers[i]->beginRenderPass(vk::RenderPassBeginInfo{ render_pass.get(), framebuffers[i].get(), render_area, 1, &clear }, vk::SubpassContents::eInline);
 			command_buffers[i]->bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.get());
+			command_buffers[i]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(float), &time);
 			command_buffers[i]->draw(6, 1, 0, 0);
 			command_buffers[i]->endRenderPass();
 			command_buffers[i]->end();
@@ -353,15 +363,21 @@ public:
 		{
 			glfwPollEvents();
 
+			// We must re-record our command buffers every frame, since we are using push constants
+			record_command_buffers();
+
+			// Submit a command buffer after acquiring the index of the next available swapchain image
 			auto index = device->acquireNextImageKHR(swapchain.get(), (std::numeric_limits<uint64_t>::max)(), semaphore_image_available.get(), {}).value;
-
 			const vk::PipelineStageFlags wait_stages[] = { vk::PipelineStageFlagBits::eColorAttachmentOutput };
-
 			auto submit_info = vk::SubmitInfo{ 1, &semaphore_image_available.get(), wait_stages, 1, &command_buffers[index].get(), 1, &sempahore_render_finished.get() };
 			queue.submit(submit_info, {});
 
+			// Present the final rendered image to the swapchain
 			auto present_info = vk::PresentInfoKHR{ 1, &sempahore_render_finished.get(), 1, &swapchain.get(), &index };
 			queue.presentKHR(present_info);
+
+			// Wait for all work on this queue to finish (TODO)
+			queue.waitIdle();
 		}
 	}
 
@@ -373,6 +389,7 @@ private:
 	GLFWwindow* window;
 
 	vk::PhysicalDevice physical_device;
+
 	vk::Queue queue;
 	uint32_t queue_family_index;
 
@@ -389,6 +406,7 @@ private:
 	vk::UniqueSurfaceKHR surface;
 	vk::UniqueSwapchainKHR swapchain;
 	vk::UniqueRenderPass render_pass;
+	vk::UniquePipelineLayout pipeline_layout;
 	vk::UniquePipeline pipeline;
 	vk::UniqueCommandPool command_pool;
 	vk::UniqueSemaphore semaphore_image_available;

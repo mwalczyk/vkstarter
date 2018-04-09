@@ -12,5 +12,7 @@ layout(push_constant) uniform PushConstants
 
 void main() 
 {
-    o_color = vec4(color, 1.0);
+	float modulate = sin(push_constants.time) * 0.5 + 0.5;
+
+    o_color = vec4(color * modulate, 1.0);
 }
