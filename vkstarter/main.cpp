@@ -283,7 +283,7 @@ public:
 			.setLineWidth(1.0f);
 
 		auto multisample_state_create_info = vk::PipelineMultisampleStateCreateInfo{};
-
+		
 		auto color_blend_attachment_state = vk::PipelineColorBlendAttachmentState{}
 			.setColorWriteMask(vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA);
 
