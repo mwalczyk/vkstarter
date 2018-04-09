@@ -13,6 +13,7 @@ layout(push_constant) uniform PushConstants
 void main() 
 {
 	float modulate = sin(push_constants.time) * 0.5 + 0.5;
+	vec2 screen_color = gl_FragCoord.xy / vec2(800.0, 600.0);
 
-    o_color = vec4(color * modulate, 1.0);
+    o_color = vec4(screen_color * modulate, 0.0, 1.0);
 }

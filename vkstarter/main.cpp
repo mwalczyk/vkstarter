@@ -12,6 +12,12 @@
 
 #include "vulkan/vulkan.hpp"
 
+#ifdef _DEBUG
+#define LOG_DEBUG(x) std::cout << x << "\n"
+#else
+#define LOG_DEBUG(x) 
+#endif
+
 float get_elapsed_time()
 {
 	static std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
@@ -130,7 +136,7 @@ public:
 		auto debug_report_callback_create_info = vk::DebugReportCallbackCreateInfoEXT{ vk::DebugReportFlagBitsEXT::eError | vk::DebugReportFlagBitsEXT::eWarning, debug_callback };
 
 		debug_report_callback = instance->createDebugReportCallbackEXT(debug_report_callback_create_info, nullptr, dynamic_dispatch_loader);
-		std::cout << "Initializing debug report callback\n";
+		LOG_DEBUG("Initializing debug report callback");
 #endif
 	}
 
@@ -148,8 +154,8 @@ public:
 		auto queue_create_info = vk::DeviceQueueCreateInfo{}
 			.setPQueuePriorities(&priority)
 			.setQueueCount(1)
-			.setQueueFamilyIndex(0);// static_cast<uint32_t>(std::distance(queue_family_properties.begin(), std::find_if(queue_family_properties.begin(), queue_family_properties.end(), predicate))));
-		std::cout << "Using queue family at index [ " << queue_create_info.queueFamilyIndex << " ], which supports graphics operations\n";
+			.setQueueFamilyIndex(static_cast<uint32_t>(std::distance(queue_family_properties.begin(), std::find_if(queue_family_properties.begin(), queue_family_properties.end(), predicate))));
+		LOG_DEBUG("Using queue family at index [ " << queue_create_info.queueFamilyIndex << " ], which supports graphics operations");
 
 		// Save the index of the chosen queue family
 		queue_family_index = queue_create_info.queueFamilyIndex;
@@ -201,7 +207,7 @@ public:
 
 		// Retrieve the images from the swapchain
 		swapchain_images = device->getSwapchainImagesKHR(swapchain.get());
-		std::cout << "There are [ " << swapchain_images.size() << " ] images in the swapchain\n";
+		LOG_DEBUG("There are [ " << swapchain_images.size() << " ] images in the swapchain");
 
 		// Create an image view for each image in the swapchain
 		for (const auto& image : swapchain_images)
@@ -210,7 +216,7 @@ public:
 			auto image_view_create_info = vk::ImageViewCreateInfo{ {}, image, vk::ImageViewType::e2D, swapchain_image_format, {}, subresource_range };
 			swapchain_image_views.push_back(device->createImageViewUnique(image_view_create_info));
 		}
-		std::cout << "Created [ " << swapchain_image_views.size() << " ] image views\n";
+		LOG_DEBUG("Created [ " << swapchain_image_views.size() << " ] image views");
 	}
 
 	void initialize_render_pass()
@@ -251,7 +257,7 @@ public:
 		const std::string fs_spv_path = path_prefix + "frag.spv";
 		auto vs_module = load_spv_into_module(device, vs_spv_path);
 		auto fs_module = load_spv_into_module(device, fs_spv_path);
-		std::cout << "Successfully loaded shader modules\n";
+		LOG_DEBUG("Successfully loaded shader modules");
 
 		// Then, create a pipeline layout
 		auto push_constant_range = vk::PushConstantRange{ vk::ShaderStageFlagBits::eFragment, 0, sizeof(float) };
@@ -309,7 +315,7 @@ public:
 		};
 
 		pipeline = device->createGraphicsPipelineUnique({}, graphics_pipeline_create_info);
-		std::cout << "Created graphics pipeline\n";
+		LOG_DEBUG("Created graphics pipeline");
 	}
 
 	void initialize_framebuffers()
@@ -320,7 +326,7 @@ public:
 			auto framebuffer_create_info = vk::FramebufferCreateInfo{ {}, render_pass.get(), 1, &image_view.get(), width, height, framebuffer_layers };
 			framebuffers.push_back(device->createFramebufferUnique(framebuffer_create_info));
 		}
-		std::cout << "Created [ " << framebuffers.size() << " ] framebuffers\n";
+		LOG_DEBUG("Created [ " << framebuffers.size() << " ] framebuffers");
 	}
 
 	void initialize_command_pool()
@@ -331,7 +337,7 @@ public:
 	void initialize_command_buffers()
 	{
 		command_buffers = device->allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo{ command_pool.get(), vk::CommandBufferLevel::ePrimary, static_cast<uint32_t>(framebuffers.size()) });
-		std::cout << "Allocated [ " << command_buffers.size() << " ] command buffers\n";
+		LOG_DEBUG("Allocated [ " << command_buffers.size() << " ] command buffers");
 	}
 
 	void record_command_buffers()
@@ -388,11 +394,6 @@ private:
 
 	GLFWwindow* window;
 
-	vk::PhysicalDevice physical_device;
-
-	vk::Queue queue;
-	uint32_t queue_family_index;
-
 	vk::SurfaceCapabilitiesKHR surface_capabilities;
 	std::vector<vk::SurfaceFormatKHR> surface_formats;
 	std::vector<vk::PresentModeKHR> surface_present_modes;
@@ -400,7 +401,11 @@ private:
 	vk::Format swapchain_image_format;
 	vk::Extent2D swapchain_extent;
 
+	vk::PhysicalDevice physical_device;
 	vk::DebugReportCallbackEXT debug_report_callback;
+	vk::Queue queue;
+	uint32_t queue_family_index;
+
 	vk::UniqueInstance instance;
 	vk::UniqueDevice device;
 	vk::UniqueSurfaceKHR surface;
