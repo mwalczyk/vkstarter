@@ -2,6 +2,7 @@
 #include <sstream>
 #include <fstream>
 #include <limits>
+#include <chrono>
 
 #define VK_USE_PLATFORM_WIN32_KHR
 #define GLFW_EXPOSE_NATIVE_WIN32
@@ -10,6 +11,16 @@
 #include "glfw3native.h"
 
 #include "vulkan/vulkan.hpp"
+
+float get_elapsed_time()
+{
+	static std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+	std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+
+	auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
+
+	return static_cast<float>(ms) / 1000.0f;
+}
 
 vk::UniqueShaderModule load_spv_into_module(const vk::UniqueDevice& device, const std::string& filename) 
 {
@@ -272,7 +283,7 @@ int main()
 		command_buffers[i]->begin(vk::CommandBufferBeginInfo{ vk::CommandBufferUsageFlagBits::eSimultaneousUse });
 		command_buffers[i]->beginRenderPass(vk::RenderPassBeginInfo{ render_pass.get(), framebuffers[i].get(), render_area, 1, &clear }, vk::SubpassContents::eInline);
 		command_buffers[i]->bindPipeline(vk::PipelineBindPoint::eGraphics, graphics_pipeline.get());
-		command_buffers[i]->draw(3, 1, 0, 0);
+		command_buffers[i]->draw(6, 1, 0, 0);
 		command_buffers[i]->endRenderPass();
 		command_buffers[i]->end();
 	}
@@ -286,14 +297,14 @@ int main()
 	{
 		glfwPollEvents();
 
-		auto index = device->acquireNextImageKHR(swapchain.get(), (std::numeric_limits<uint64_t>::max)(), semaphore_image_available.get(), {});
+		auto index = device->acquireNextImageKHR(swapchain.get(), (std::numeric_limits<uint64_t>::max)(), semaphore_image_available.get(), {}).value;
 
 		const vk::PipelineStageFlags wait_stages[] = { vk::PipelineStageFlagBits::eColorAttachmentOutput };
 
-		auto submit_info = vk::SubmitInfo{ 1, &semaphore_image_available.get(), wait_stages, 1, &command_buffers[index.value].get(), 1, &sempahore_render_finished.get() };
+		auto submit_info = vk::SubmitInfo{ 1, &semaphore_image_available.get(), wait_stages, 1, &command_buffers[index].get(), 1, &sempahore_render_finished.get() };
 		queue.submit(submit_info, {});
 
-		auto present_info = vk::PresentInfoKHR{ 1, &sempahore_render_finished.get(), 1, &swapchain.get(), &index.value };
+		auto present_info = vk::PresentInfoKHR{ 1, &sempahore_render_finished.get(), 1, &swapchain.get(), &index };
 		queue.presentKHR(present_info);
 	}
 

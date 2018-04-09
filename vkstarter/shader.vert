@@ -8,11 +8,19 @@ out gl_PerVertex
 
 layout(location = 0) out vec3 color;
 
-const vec2 positions[3] = vec2[](vec2( 0.0, -0.5),
-						         vec2( 0.5,  0.5),
-						         vec2(-0.5,  0.5));
+// draws a fullscreen quad
+const vec2 positions[6] = vec2[](vec2(-1.0,  1.0),   // lower left
+								 vec2(-1.0, -1.0),   // upper left
+								 vec2( 1.0, -1.0),   // upper right
 
-const vec3 colors[3] = vec3[](vec3(1.0, 0.0, 0.0),
+								 vec2(-1.0,  1.0),   // lower left
+								 vec2( 1.0, -1.0),   // upper right
+								 vec2( 1.0,  1.0));  // lower right
+
+const vec3 colors[6] = vec3[](vec3(1.0, 0.0, 0.0),
+					          vec3(0.0, 1.0, 0.0),
+					          vec3(0.0, 0.0, 1.0),
+					          vec3(1.0, 0.0, 0.0),
 					          vec3(0.0, 1.0, 0.0),
 					          vec3(0.0, 0.0, 1.0));
 
