@@ -109,7 +109,7 @@ public:
 		initialize_framebuffers();
 		initialize_command_pool();
 		initialize_command_buffers();
-		initialize_semaphores();
+		initialize_synchronization_primitives();
 	}
 
 	void initialize_window()
@@ -340,27 +340,30 @@ public:
 		LOG_DEBUG("Allocated [ " << command_buffers.size() << " ] command buffers");
 	}
 
-	void record_command_buffers()
+	void record_command_buffer(uint32_t index)
 	{
 		const vk::ClearValue clear = std::array<float, 4>{ 0.15f, 0.15f, 0.15f, 1.0f };
 		const vk::Rect2D render_area{ { 0, 0 }, swapchain_extent };
 		float time = get_elapsed_time();
-		for (size_t i = 0; i < command_buffers.size(); ++i)
-		{	
-			command_buffers[i]->begin(vk::CommandBufferBeginInfo{ vk::CommandBufferUsageFlagBits::eSimultaneousUse });
-			command_buffers[i]->beginRenderPass(vk::RenderPassBeginInfo{ render_pass.get(), framebuffers[i].get(), render_area, 1, &clear }, vk::SubpassContents::eInline);
-			command_buffers[i]->bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.get());
-			command_buffers[i]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(float), &time);
-			command_buffers[i]->draw(6, 1, 0, 0);
-			command_buffers[i]->endRenderPass();
-			command_buffers[i]->end();
-		}
+
+		command_buffers[index]->begin(vk::CommandBufferBeginInfo{ vk::CommandBufferUsageFlagBits::eSimultaneousUse });
+		command_buffers[index]->beginRenderPass(vk::RenderPassBeginInfo{ render_pass.get(), framebuffers[index].get(), render_area, 1, &clear }, vk::SubpassContents::eInline);
+		command_buffers[index]->bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.get());
+		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(float), &time);
+		command_buffers[index]->draw(6, 1, 0, 0);
+		command_buffers[index]->endRenderPass();
+		command_buffers[index]->end();
 	}
 
-	void initialize_semaphores()
+	void initialize_synchronization_primitives()
 	{
 		semaphore_image_available = device->createSemaphoreUnique({});
 		sempahore_render_finished = device->createSemaphoreUnique({});
+
+		for (size_t i = 0; i < command_buffers.size(); ++i)
+		{			
+			fences.push_back(device->createFenceUnique({ vk::FenceCreateFlagBits::eSignaled }));
+		}
 	}
 	
 	void draw()
@@ -369,21 +372,23 @@ public:
 		{
 			glfwPollEvents();
 
-			// We must re-record our command buffers every frame, since we are using push constants
-			record_command_buffers();
-
 			// Submit a command buffer after acquiring the index of the next available swapchain image
 			auto index = device->acquireNextImageKHR(swapchain.get(), (std::numeric_limits<uint64_t>::max)(), semaphore_image_available.get(), {}).value;
+
+			// If the command buffer we want to (re)use is still pending on the GPU, wait for it then reset its fence
+			device->waitForFences(fences[index].get(), true, (std::numeric_limits<uint64_t>::max)());
+			device->resetFences(fences[index].get());
+
+			// Now, we know that we can safely (re)use this command buffer
+			record_command_buffer(index);
+			
 			const vk::PipelineStageFlags wait_stages[] = { vk::PipelineStageFlagBits::eColorAttachmentOutput };
 			auto submit_info = vk::SubmitInfo{ 1, &semaphore_image_available.get(), wait_stages, 1, &command_buffers[index].get(), 1, &sempahore_render_finished.get() };
-			queue.submit(submit_info, {});
+			queue.submit(submit_info, fences[index].get());
 
 			// Present the final rendered image to the swapchain
 			auto present_info = vk::PresentInfoKHR{ 1, &sempahore_render_finished.get(), 1, &swapchain.get(), &index };
 			queue.presentKHR(present_info);
-
-			// Wait for all work on this queue to finish (TODO)
-			queue.waitIdle();
 		}
 	}
 
@@ -420,6 +425,7 @@ private:
 	std::vector<vk::UniqueImageView> swapchain_image_views;
 	std::vector<vk::UniqueFramebuffer> framebuffers;
 	std::vector<vk::UniqueCommandBuffer> command_buffers;
+	std::vector<vk::UniqueFence> fences;
 };
 
 int main()
