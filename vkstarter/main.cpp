@@ -210,9 +210,9 @@ public:
 		LOG_DEBUG("There are [ " << swapchain_images.size() << " ] images in the swapchain");
 
 		// Create an image view for each image in the swapchain
+		const auto subresource_range = vk::ImageSubresourceRange{ vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
 		for (const auto& image : swapchain_images)
 		{
-			const auto subresource_range = vk::ImageSubresourceRange{ vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
 			auto image_view_create_info = vk::ImageViewCreateInfo{ {}, image, vk::ImageViewType::e2D, swapchain_image_format, {}, subresource_range };
 			swapchain_image_views.push_back(device->createImageViewUnique(image_view_create_info));
 		}
@@ -342,7 +342,7 @@ public:
 
 	void record_command_buffer(uint32_t index)
 	{
-		const vk::ClearValue clear = std::array<float, 4>{ 0.15f, 0.15f, 0.15f, 1.0f };
+		const vk::ClearValue clear = std::array<float, 4>{ 0.0f, 0.0f, 0.0f, 1.0f };
 		const vk::Rect2D render_area{ { 0, 0 }, swapchain_extent };
 		float time = get_elapsed_time();
 
