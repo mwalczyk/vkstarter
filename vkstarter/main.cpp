@@ -258,7 +258,7 @@ public:
 		auto vs_module = load_spv_into_module(device, vs_spv_path);
 		auto fs_module = load_spv_into_module(device, fs_spv_path);
 		LOG_DEBUG("Successfully loaded shader modules");
-
+		
 		// Then, create a pipeline layout
 		auto push_constant_range = vk::PushConstantRange{ vk::ShaderStageFlagBits::eFragment, 0, sizeof(float) };
 		auto pipeline_layout_create_info = vk::PipelineLayoutCreateInfo{}
@@ -362,6 +362,7 @@ public:
 
 		for (size_t i = 0; i < command_buffers.size(); ++i)
 		{			
+			// Create each fence in a signaled state, so that the first call to `waitForFences` in the draw loop doesn't throw any errors
 			fences.push_back(device->createFenceUnique({ vk::FenceCreateFlagBits::eSignaled }));
 		}
 	}
