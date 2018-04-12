@@ -4,9 +4,11 @@
 #include <limits>
 #include <chrono>
 
+#define NOMINMAX
+
 #define VK_USE_PLATFORM_WIN32_KHR
 #define GLFW_EXPOSE_NATIVE_WIN32
-
+#define GLFW_INCLUDE_VULKAN
 #include "glfw3.h"
 #include "glfw3native.h"
 
@@ -97,6 +99,32 @@ public:
 		glfwTerminate();
 	}
 
+	static void on_window_resized(GLFWwindow* window, int width, int height) 
+	{
+		Application* app = reinterpret_cast<Application*>(glfwGetWindowUserPointer(window));
+		app->resize();
+
+		LOG_DEBUG("Window resized to " + std::to_string(width) + " x " + std::to_string(height));
+	}
+
+	void resize()
+	{
+		device->waitIdle();
+
+		int new_width;
+		int new_height;
+		glfwGetWindowSize(window, &new_width, &new_height);
+		width = new_width;
+		height = new_height;
+
+		device->destroySwapchainKHR(swapchain.get());
+
+		initialize_swapchain();
+		initialize_render_pass();
+		initialize_pipeline();
+		initialize_framebuffers();
+	}
+
 	void setup()
 	{
 		initialize_window();
@@ -116,8 +144,10 @@ public:
 	{
 		glfwInit();
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-		glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 		window = glfwCreateWindow(width, height, name.c_str(), nullptr, nullptr);
+
+		glfwSetWindowUserPointer(window, this);
+		glfwSetWindowSizeCallback(window, on_window_resized);
 	}
 
 	void initialize_instance()
@@ -178,17 +208,35 @@ public:
 	{	
 		auto surface_create_info = vk::Win32SurfaceCreateInfoKHR{ {}, GetModuleHandle(nullptr), glfwGetWin32Window(window) };
 
-		surface = instance->createWin32SurfaceKHRUnique(surface_create_info);
+		VkSurfaceKHR temp_surface;
+		glfwCreateWindowSurface(instance.get(), window, nullptr, &temp_surface);
 
-		surface_capabilities = physical_device.getSurfaceCapabilitiesKHR(surface.get());
-		surface_formats = physical_device.getSurfaceFormatsKHR(surface.get());
-		surface_present_modes = physical_device.getSurfacePresentModesKHR(surface.get());
-		
-		auto surface_support = physical_device.getSurfaceSupportKHR(queue_family_index, surface.get());
+		surface = temp_surface;// instance->createWin32SurfaceKHRUnique()
+		//surface = instance->createWin32SurfaceKHRUnique(surface_create_info);
+
+		surface_capabilities = physical_device.getSurfaceCapabilitiesKHR(surface);
+		surface_formats = physical_device.getSurfaceFormatsKHR(surface);
+		surface_present_modes = physical_device.getSurfacePresentModesKHR(surface);
+		std::cout << "MAX EXTENT " << surface_capabilities.maxImageExtent.width << ", " << surface_capabilities.maxImageExtent.height << "\n";
+
+		auto surface_support = physical_device.getSurfaceSupportKHR(queue_family_index, surface);
 	}
 
 	void initialize_swapchain()
 	{
+		if (surface_capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) 
+		{
+			auto extent = surface_capabilities.currentExtent;
+			std::cout << "here " << extent.width << ", " << extent.height << "\n";
+		}
+		else {
+			VkExtent2D extent;
+			extent.width = std::max(surface_capabilities.minImageExtent.width, std::min(surface_capabilities.maxImageExtent.width, width));
+			extent.height = std::max(surface_capabilities.minImageExtent.height, std::min(surface_capabilities.maxImageExtent.height, height));
+
+			std::cout << "HERE " << extent.width << ", " << extent.height << "\n";
+		}
+
 		swapchain_image_format = vk::Format::eB8G8R8A8Unorm;
 		swapchain_extent = vk::Extent2D{ width, height };
 
@@ -201,7 +249,7 @@ public:
 			.setMinImageCount(surface_capabilities.minImageCount + 1)
 			.setPreTransform(surface_capabilities.currentTransform)
 			.setClipped(true)
-			.setSurface(surface.get());
+			.setSurface(surface);
 
 		swapchain = device->createSwapchainKHRUnique(swapchain_create_info);
 
@@ -414,7 +462,7 @@ private:
 
 	vk::UniqueInstance instance;
 	vk::UniqueDevice device;
-	vk::UniqueSurfaceKHR surface;
+	vk::SurfaceKHR surface;
 	vk::UniqueSwapchainKHR swapchain;
 	vk::UniqueRenderPass render_pass;
 	vk::UniquePipelineLayout pipeline_layout;
