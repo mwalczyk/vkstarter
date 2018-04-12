@@ -387,7 +387,7 @@ public:
 		const vk::ClearValue clear = std::array<float, 4>{ 0.0f, 0.0f, 0.0f, 1.0f };
 		const vk::Rect2D render_area{ { 0, 0 }, swapchain_extent };
 		float time = get_elapsed_time();
-		float resolution[2] = { width, height };
+		float resolution[2] = { static_cast<float>(width), static_cast<float>(height) };
 
 		command_buffers[index]->begin(vk::CommandBufferBeginInfo{ vk::CommandBufferUsageFlagBits::eSimultaneousUse });
 		command_buffers[index]->beginRenderPass(vk::RenderPassBeginInfo{ render_pass.get(), framebuffers[index].get(), render_area, 1, &clear }, vk::SubpassContents::eInline);
