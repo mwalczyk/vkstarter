@@ -5,13 +5,11 @@
 #include <chrono>
 
 #define NOMINMAX
-
-#define VK_USE_PLATFORM_WIN32_KHR
 #define GLFW_EXPOSE_NATIVE_WIN32
-#define GLFW_INCLUDE_VULKAN
 #include "glfw3.h"
 #include "glfw3native.h"
 
+#define VK_USE_PLATFORM_WIN32_KHR
 #include "vulkan/vulkan.hpp"
 
 #ifdef _DEBUG
@@ -19,6 +17,12 @@
 #else
 #define LOG_DEBUG(x) 
 #endif
+
+struct alignas(8) PushConstants
+{
+	float time;
+	float resolution[2];
+};
 
 float get_elapsed_time()
 {
@@ -103,8 +107,6 @@ public:
 	{
 		Application* app = reinterpret_cast<Application*>(glfwGetWindowUserPointer(window));
 		app->resize();
-
-		LOG_DEBUG("Window resized to " + std::to_string(width) + " x " + std::to_string(height));
 	}
 
 	void resize()
@@ -116,8 +118,14 @@ public:
 		glfwGetWindowSize(window, &new_width, &new_height);
 		width = new_width;
 		height = new_height;
+		LOG_DEBUG("Window resized to " + std::to_string(width) + " x " + std::to_string(height));
 
-		device->destroySwapchainKHR(swapchain.get());
+		swapchain.reset();
+		render_pass.reset();
+		pipeline.reset();
+
+		// We do not need to explicitly clear the framebuffers or swapchain image views, since that is taken
+		// care of by the `initialize_*()` methods below
 
 		initialize_swapchain();
 		initialize_render_pass();
@@ -144,6 +152,7 @@ public:
 	{
 		glfwInit();
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+
 		window = glfwCreateWindow(width, height, name.c_str(), nullptr, nullptr);
 
 		glfwSetWindowUserPointer(window, this);
@@ -208,34 +217,15 @@ public:
 	{	
 		auto surface_create_info = vk::Win32SurfaceCreateInfoKHR{ {}, GetModuleHandle(nullptr), glfwGetWin32Window(window) };
 
-		VkSurfaceKHR temp_surface;
-		glfwCreateWindowSurface(instance.get(), window, nullptr, &temp_surface);
-
-		surface = temp_surface;// instance->createWin32SurfaceKHRUnique()
-		//surface = instance->createWin32SurfaceKHRUnique(surface_create_info);
-
-		surface_capabilities = physical_device.getSurfaceCapabilitiesKHR(surface);
-		surface_formats = physical_device.getSurfaceFormatsKHR(surface);
-		surface_present_modes = physical_device.getSurfacePresentModesKHR(surface);
-		std::cout << "MAX EXTENT " << surface_capabilities.maxImageExtent.width << ", " << surface_capabilities.maxImageExtent.height << "\n";
-
-		auto surface_support = physical_device.getSurfaceSupportKHR(queue_family_index, surface);
+		surface = instance->createWin32SurfaceKHRUnique(surface_create_info);
 	}
 
 	void initialize_swapchain()
 	{
-		if (surface_capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) 
-		{
-			auto extent = surface_capabilities.currentExtent;
-			std::cout << "here " << extent.width << ", " << extent.height << "\n";
-		}
-		else {
-			VkExtent2D extent;
-			extent.width = std::max(surface_capabilities.minImageExtent.width, std::min(surface_capabilities.maxImageExtent.width, width));
-			extent.height = std::max(surface_capabilities.minImageExtent.height, std::min(surface_capabilities.maxImageExtent.height, height));
-
-			std::cout << "HERE " << extent.width << ", " << extent.height << "\n";
-		}
+		surface_capabilities = physical_device.getSurfaceCapabilitiesKHR(surface.get());
+		surface_formats = physical_device.getSurfaceFormatsKHR(surface.get());
+		surface_present_modes = physical_device.getSurfacePresentModesKHR(surface.get());
+		auto surface_support = physical_device.getSurfaceSupportKHR(queue_family_index, surface.get());
 
 		swapchain_image_format = vk::Format::eB8G8R8A8Unorm;
 		swapchain_extent = vk::Extent2D{ width, height };
@@ -249,7 +239,7 @@ public:
 			.setMinImageCount(surface_capabilities.minImageCount + 1)
 			.setPreTransform(surface_capabilities.currentTransform)
 			.setClipped(true)
-			.setSurface(surface);
+			.setSurface(surface.get());
 
 		swapchain = device->createSwapchainKHRUnique(swapchain_create_info);
 
@@ -258,6 +248,8 @@ public:
 		LOG_DEBUG("There are [ " << swapchain_images.size() << " ] images in the swapchain");
 
 		// Create an image view for each image in the swapchain
+		swapchain_image_views.clear();
+
 		const auto subresource_range = vk::ImageSubresourceRange{ vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
 		for (const auto& image : swapchain_images)
 		{
@@ -308,7 +300,7 @@ public:
 		LOG_DEBUG("Successfully loaded shader modules");
 		
 		// Then, create a pipeline layout
-		auto push_constant_range = vk::PushConstantRange{ vk::ShaderStageFlagBits::eFragment, 0, sizeof(float) };
+		auto push_constant_range = vk::PushConstantRange{ vk::ShaderStageFlagBits::eFragment, 0, sizeof(float) * 4 };
 		auto pipeline_layout_create_info = vk::PipelineLayoutCreateInfo{}
 			.setPPushConstantRanges(&push_constant_range)
 			.setPushConstantRangeCount(1);
@@ -368,6 +360,8 @@ public:
 
 	void initialize_framebuffers()
 	{
+		framebuffers.clear();
+
 		const uint32_t framebuffer_layers = 1;
 		for (const auto& image_view : swapchain_image_views)
 		{
@@ -393,11 +387,13 @@ public:
 		const vk::ClearValue clear = std::array<float, 4>{ 0.0f, 0.0f, 0.0f, 1.0f };
 		const vk::Rect2D render_area{ { 0, 0 }, swapchain_extent };
 		float time = get_elapsed_time();
+		float resolution[2] = { width, height };
 
 		command_buffers[index]->begin(vk::CommandBufferBeginInfo{ vk::CommandBufferUsageFlagBits::eSimultaneousUse });
 		command_buffers[index]->beginRenderPass(vk::RenderPassBeginInfo{ render_pass.get(), framebuffers[index].get(), render_area, 1, &clear }, vk::SubpassContents::eInline);
 		command_buffers[index]->bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.get());
 		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(float), &time);
+		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eFragment, sizeof(float) * 2, sizeof(float) * 2, resolution);
 		command_buffers[index]->draw(6, 1, 0, 0);
 		command_buffers[index]->endRenderPass();
 		command_buffers[index]->end();
@@ -462,7 +458,7 @@ private:
 
 	vk::UniqueInstance instance;
 	vk::UniqueDevice device;
-	vk::SurfaceKHR surface;
+	vk::UniqueSurfaceKHR surface;
 	vk::UniqueSwapchainKHR swapchain;
 	vk::UniqueRenderPass render_pass;
 	vk::UniquePipelineLayout pipeline_layout;
