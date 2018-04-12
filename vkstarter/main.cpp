@@ -311,7 +311,7 @@ public:
 		const char* entry_point = "main";
 		auto vs_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eVertex, vs_module.get(), entry_point };
 		auto fs_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eFragment, fs_module.get(), entry_point };
-		const vk::PipelineShaderStageCreateInfo shader_stage_create_infos[2] = { vs_stage_create_info, fs_stage_create_info };
+		const vk::PipelineShaderStageCreateInfo shader_stage_create_infos[] = { vs_stage_create_info, fs_stage_create_info };
 
 		auto vertex_input_state_create_info = vk::PipelineVertexInputStateCreateInfo{};
 
@@ -386,14 +386,19 @@ public:
 	{
 		const vk::ClearValue clear = std::array<float, 4>{ 0.0f, 0.0f, 0.0f, 1.0f };
 		const vk::Rect2D render_area{ { 0, 0 }, swapchain_extent };
-		float time = get_elapsed_time();
-		float resolution[2] = { static_cast<float>(width), static_cast<float>(height) };
+
+		float constants[] = 
+		{ 
+			get_elapsed_time(), 
+			0.0f,  /* Padding */
+			static_cast<float>(width), 
+			static_cast<float>(height) 
+		};
 
 		command_buffers[index]->begin(vk::CommandBufferBeginInfo{ vk::CommandBufferUsageFlagBits::eSimultaneousUse });
 		command_buffers[index]->beginRenderPass(vk::RenderPassBeginInfo{ render_pass.get(), framebuffers[index].get(), render_area, 1, &clear }, vk::SubpassContents::eInline);
 		command_buffers[index]->bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.get());
-		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(float), &time);
-		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eFragment, sizeof(float) * 2, sizeof(float) * 2, resolution);
+		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(constants), constants);
 		command_buffers[index]->draw(6, 1, 0, 0);
 		command_buffers[index]->endRenderPass();
 		command_buffers[index]->end();
