@@ -7,7 +7,7 @@ Note that there are many checks and features that are omitted in this project th
 is meant to be a starting point!
 
 ## Tested On
-Windows 8.1, NVIDIA GeForce GTX 970M, v`1.1.70.1` Vulkan SDK.
+Windows 8.1, NVIDIA GeForce GTX 970M, `1.1.70.1` Vulkan SDK with Visual Studio 2015.
 
 ## To Build
 1. Clone this repo.
