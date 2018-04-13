@@ -21,7 +21,9 @@
 struct alignas(8) PushConstants
 {
 	float time;
+	float __padding;
 	float resolution[2];
+	/* Add more members here: mind the struct alignment */
 };
 
 float get_elapsed_time()
@@ -387,7 +389,7 @@ public:
 		const vk::ClearValue clear = std::array<float, 4>{ 0.0f, 0.0f, 0.0f, 1.0f };
 		const vk::Rect2D render_area{ { 0, 0 }, swapchain_extent };
 
-		float constants[] = 
+		PushConstants push_constants = 		
 		{ 
 			get_elapsed_time(), 
 			0.0f,  /* Padding */
@@ -398,7 +400,7 @@ public:
 		command_buffers[index]->begin(vk::CommandBufferBeginInfo{ vk::CommandBufferUsageFlagBits::eSimultaneousUse });
 		command_buffers[index]->beginRenderPass(vk::RenderPassBeginInfo{ render_pass.get(), framebuffers[index].get(), render_area, 1, &clear }, vk::SubpassContents::eInline);
 		command_buffers[index]->bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.get());
-		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(constants), constants);
+		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(push_constants), &push_constants);
 		command_buffers[index]->draw(6, 1, 0, 0);
 		command_buffers[index]->endRenderPass();
 		command_buffers[index]->end();
