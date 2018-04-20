@@ -1,5 +1,5 @@
 # vkstarter
-Simple starter code for building applications with Vulkan and C++.
+🔨 Simple starter code for building applications with Vulkan and C++.
 
 <p>
   <img src="https://github.com/mwalczyk/vkstarter/blob/master/screenshots/screenshot.png" alt="screenshot" width="300" height="auto"/>
