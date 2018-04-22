@@ -23,6 +23,15 @@ Windows 8.1, NVIDIA GeForce GTX 970M, `1.1.70.1` Vulkan SDK with Visual Studio 2
 6. Open the Visual Studio 2015 solution file.
 7. Build the included project.
 
+NOTE: There appears to be a bug in `vulkan.hpp`, which requires one to change line `35431` from:
+```
+ObjectDestroy<NoParent> deleter( *this, allocator );
+```
+to:
+```
+ObjectDestroy<NoParent> deleter( allocator );
+```
+
 ### License
 
 :copyright: The Interaction Department 2018
