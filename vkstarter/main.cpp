@@ -143,6 +143,10 @@ public:
 		initialize_surface();
 		initialize_swapchain();
 		initialize_render_pass();
+
+		initialize_rtx_pipeline();
+		
+
 		initialize_pipeline();
 		initialize_framebuffers();
 		initialize_command_pool();
@@ -168,18 +172,20 @@ public:
 #ifdef _DEBUG
 		layers.push_back("VK_LAYER_LUNARG_standard_validation");
 #endif
-		
 		auto application_info = vk::ApplicationInfo{ name.c_str(), VK_MAKE_VERSION(1, 0, 0), name.c_str(), VK_MAKE_VERSION(1, 0, 0), VK_API_VERSION_1_1 };
 
 		instance = vk::createInstanceUnique(vk::InstanceCreateInfo{ {}, &application_info, static_cast<uint32_t>(layers.size()), layers.data(), static_cast<uint32_t>(extensions.size()), extensions.data() });
 
+		// vulkan.hpp provides a per-function dispatch mechanism by accepting a dispatch class as last parameter in each function call -
+		// this is required to use extensions
+		dispatch_loader = vk::DispatchLoaderDynamic{ instance.get() };
 #ifdef _DEBUG
-		auto dynamic_dispatch_loader = vk::DispatchLoaderDynamic{ instance.get() };
 		auto debug_report_callback_create_info = vk::DebugReportCallbackCreateInfoEXT{ vk::DebugReportFlagBitsEXT::eError | vk::DebugReportFlagBitsEXT::eWarning, debug_callback };
 
-		debug_report_callback = instance->createDebugReportCallbackEXT(debug_report_callback_create_info, nullptr, dynamic_dispatch_loader);
+		debug_report_callback = instance->createDebugReportCallbackEXT(debug_report_callback_create_info, nullptr, dispatch_loader);
 		LOG_DEBUG("Initializing debug report callback");
 #endif
+
 	}
 
 	void initialize_device()
@@ -203,7 +209,7 @@ public:
 		queue_family_index = queue_create_info.queueFamilyIndex;
 
 		// Then, we construct a logical device around the chosen physical device
-		const std::vector<const char*> device_extensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+		const std::vector<const char*> device_extensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_NVX_RAYTRACING_EXTENSION_NAME };
 		auto device_create_info = vk::DeviceCreateInfo{}
 			.setPQueueCreateInfos(&queue_create_info)
 			.setQueueCreateInfoCount(1)
@@ -290,6 +296,91 @@ public:
 		auto render_pass_create_info = vk::RenderPassCreateInfo{ {}, 1, &attachment_description, 1, &subpass_description, 1, &subpass_dependency };
 
 		render_pass = device->createRenderPassUnique(render_pass_create_info);
+	}
+
+	// RTX
+	void initialize_rtx_geometry()
+	{
+
+	}
+
+	// RTX
+	void initialize_rtx_acceleration_structures()
+	{
+
+	}
+
+	// RTX
+	void initialize_rtx_pipeline()
+	{
+		{
+			auto physical_device_ray_tracing_properties = vk::PhysicalDeviceRaytracingPropertiesNVX{};
+			auto physical_device_properties_2 = vk::PhysicalDeviceProperties2{};
+			
+			// Attach a pointer to the ray tracing struct extension
+			physical_device_properties_2.pNext = &physical_device_ray_tracing_properties;
+
+			// Finally, populate the structs 
+			physical_device.getProperties2(&physical_device_properties_2);
+
+			LOG_DEBUG("Physical device ray tracing properties:");
+			LOG_DEBUG("Max geometry count: " << physical_device_ray_tracing_properties.maxGeometryCount);
+			LOG_DEBUG("Max recursion depth: " << physical_device_ray_tracing_properties.maxRecursionDepth);
+			LOG_DEBUG("Shader header size: " << physical_device_ray_tracing_properties.shaderHeaderSize);
+		}
+
+		// Load the 3 shader modules that will be used to build the RTX pipeline
+		const std::string path_prefix = "";
+		const std::string rgen_spv_path = path_prefix + "rgen.spv";
+		const std::string chit_spv_path = path_prefix + "rchit.spv";
+		const std::string miss_spv_path = path_prefix + "rmiss.spv";
+		auto rgen_module = load_spv_into_module(device, rgen_spv_path);
+		auto chit_module = load_spv_into_module(device, chit_spv_path);
+		auto miss_module = load_spv_into_module(device, miss_spv_path);
+		LOG_DEBUG("Successfully loaded RTX shader modules");
+
+		// Gather shader stage create infos
+		const char* entry_point = "main";
+		auto rgen_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eRaygenNVX, rgen_module.get(), entry_point };
+		auto chit_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eClosestHitNVX, chit_module.get(), entry_point };
+		auto miss_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eMissNVX, miss_module.get(), entry_point };
+		const vk::PipelineShaderStageCreateInfo shader_stage_create_infos[] = { rgen_stage_create_info, chit_stage_create_info, miss_stage_create_info };
+
+		// Create a descriptor set layout that accommodates 2 descriptors:
+		// 1. Acceleration structure
+		// 2. Storage image
+		auto layout_binding_0 = vk::DescriptorSetLayoutBinding{ 0, vk::DescriptorType::eAccelerationStructureNVX, 1, vk::ShaderStageFlagBits::eRaygenNVX };
+		auto layout_binding_1 = vk::DescriptorSetLayoutBinding{ 1, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eRaygenNVX };
+		const vk::DescriptorSetLayoutBinding descriptor_set_layout_bindings[] = { layout_binding_0, layout_binding_1 };
+
+		auto descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo{}
+			.setBindingCount(2)
+			.setPBindings(descriptor_set_layout_bindings);
+
+		descriptor_set_layout = device->createDescriptorSetLayoutUnique(descriptor_set_layout_create_info);
+
+		// Create a pipeline layout for the RTX pipeline
+		auto pipeline_layout_create_info = vk::PipelineLayoutCreateInfo{}
+			.setSetLayoutCount(1)
+			.setPSetLayouts(&descriptor_set_layout.get());
+
+		raytracing_pipeline_layout = device->createPipelineLayoutUnique(pipeline_layout_create_info);
+
+		// Group 0: raygen
+		// Group 1: closest hit
+		// Group 2: miss
+		const uint32_t group_numbers[] = { 0, 1, 2 };
+
+		// Build a ray tracing pipeline object
+		auto raytracing_pipeline_create_info = vk::RaytracingPipelineCreateInfoNVX{}
+			.setStageCount(3)
+			.setPStages(shader_stage_create_infos)
+			.setPGroupNumbers(group_numbers)
+			.setLayout(raytracing_pipeline_layout.get())
+			.setMaxRecursionDepth(1);
+
+		raytracing_pipeline = device->createRaytracingPipelineNVXUnique({}, raytracing_pipeline_create_info, nullptr, dispatch_loader);
+		LOG_DEBUG("Successfully create RTX pipeline");
 	}
 
 	void initialize_pipeline()
@@ -465,12 +556,18 @@ private:
 	uint32_t queue_family_index;
 
 	vk::UniqueInstance instance;
+	vk::DispatchLoaderDynamic dispatch_loader;
 	vk::UniqueDevice device;
 	vk::UniqueSurfaceKHR surface;
 	vk::UniqueSwapchainKHR swapchain;
 	vk::UniqueRenderPass render_pass;
 	vk::UniquePipelineLayout pipeline_layout;
 	vk::UniquePipeline pipeline;
+
+	vk::UniqueDescriptorSetLayout descriptor_set_layout;
+	vk::UniquePipelineLayout raytracing_pipeline_layout;
+	vk::UniqueHandle<vk::Pipeline, vk::DispatchLoaderDynamic> raytracing_pipeline;
+
 	vk::UniqueCommandPool command_pool;
 	vk::UniqueSemaphore semaphore_image_available;
 	vk::UniqueSemaphore sempahore_render_finished;

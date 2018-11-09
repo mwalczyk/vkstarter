@@ -1,0 +1,38 @@
+#version 460
+#extension GL_NVX_raytracing : require
+
+layout(set = 0, binding = 0) uniform accelerationStructureNVX acceleration_structure;
+layout(set = 0, binding = 1, rgba8) uniform image2D result_image;
+
+layout(location = 0) rayPayloadNVX vec3 result_color;
+
+void main() 
+{
+    const vec2 uv = vec2(gl_LaunchIDNVX.xy) / vec2(gl_LaunchSizeNVX.xy - 1);
+
+    const vec3 origin = vec3(uv.x, 1.0f - uv.y, -1.0f);
+    const vec3 direction = vec3(0.0f, 0.0f, 1.0f);
+
+    const uint ray_flags = gl_RayFlagsNoneNVX;
+    const uint cull_mask = 0xFF;
+    const uint sbt_record_offset = 0;
+    const uint sbt_record_stride = 0;
+    const uint miss_index = 0;
+    const float tmin = 0.0f;
+    const float tmax = 10.0f;
+    const int payload_location = 0;
+
+    traceNVX(acceleration_structure,
+             ray_flags,
+             cull_mask,
+             sbt_record_offset,
+             sbt_record_stride,
+             miss_index,
+             origin,
+             tmin,
+             direction,
+             tmax,
+             payload_location);
+
+    imageStore(result_image, ivec2(gl_LaunchIDNVX.xy), vec4(result_color, 1.0f));
+}
