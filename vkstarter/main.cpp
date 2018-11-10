@@ -301,7 +301,27 @@ public:
 	// RTX
 	void initialize_rtx_geometry()
 	{
+		const std::vector<float> vertices = 
+		{
+			0.25f, 0.25f, 0.0f,
+			0.75f, 0.25f, 0.0f,
+			0.50f, 0.75f, 0.0f
+		};
 
+		const std::vector<uint32_t> indices = { 0, 1, 2 };
+
+		// Create the vertex buffer
+		auto buffer_create_info = vk::BufferCreateInfo{}
+			.setSize(sizeof(float) * vertices.size())
+			.setUsage(vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eRaytracingNVX);
+		
+		auto vertex_buffer = device->createBufferUnique(buffer_create_info);
+
+		// Reset usage flags for index buffer
+		buffer_create_info.setUsage(vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eRaytracingNVX);
+
+		// Create the index buffer
+		auto index_buffer = device->createBufferUnique(buffer_create_info);
 	}
 
 	// RTX
@@ -381,6 +401,12 @@ public:
 
 		raytracing_pipeline = device->createRaytracingPipelineNVXUnique({}, raytracing_pipeline_create_info, nullptr, dispatch_loader);
 		LOG_DEBUG("Successfully create RTX pipeline");
+	}
+
+	// RTX 
+	void initialize_rtx_shader_binding_table()
+	{
+
 	}
 
 	void initialize_pipeline()
