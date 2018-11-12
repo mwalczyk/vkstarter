@@ -144,6 +144,8 @@ public:
 		initialize_swapchain();
 		initialize_render_pass();
 
+
+		initialize_rtx_geometry();
 		initialize_rtx_pipeline();
 		
 
@@ -298,10 +300,53 @@ public:
 		render_pass = device->createRenderPassUnique(render_pass_create_info);
 	}
 
+	struct Buffer
+	{
+		vk::UniqueBuffer buffer;
+		vk::UniqueDeviceMemory device_memory;
+	};
+
+	uint32_t find_memory_type(uint32_t types, vk::MemoryPropertyFlags memory_properties)
+	{
+		// Query available memory types
+		auto physical_device_memory_properties = physical_device.getMemoryProperties();
+
+		// Find a suitable memory type for this buffer
+		for (uint32_t i = 0; i < physical_device_memory_properties.memoryTypeCount; i++)
+		{
+			if ((types & (1 << i)) &&
+				(physical_device_memory_properties.memoryTypes[i].propertyFlags & memory_properties) == memory_properties)
+			{
+				return i;
+			}
+		}
+
+		throw std::runtime_error("No suitable memory types found");
+	}
+
+	Buffer create_buffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags memory_properties)
+	{
+		auto buffer_create_info = vk::BufferCreateInfo{ {}, size, usage };
+		auto buffer = device->createBufferUnique(buffer_create_info);
+
+		// Figure out memory requirements for this buffer
+		auto memory_requirements = device->getBufferMemoryRequirements(buffer.get());
+		uint32_t memory_type_index = find_memory_type(memory_requirements.memoryTypeBits, memory_properties);
+
+		// Allocate memory from the heap corresponding to the specified memory type index
+		auto memory_allocate_info = vk::MemoryAllocateInfo{ memory_requirements.size, memory_type_index };
+		auto device_memory = device->allocateMemoryUnique(memory_allocate_info);
+
+		// Associate the newly allocated device memory with this buffer
+		device->bindBufferMemory(buffer.get(), device_memory.get(), 0);
+
+		return Buffer{ std::move(buffer), std::move(device_memory) };
+	}
+
 	// RTX
 	void initialize_rtx_geometry()
 	{
-		const std::vector<float> vertices = 
+		const std::vector<float> vertices =
 		{
 			0.25f, 0.25f, 0.0f,
 			0.75f, 0.25f, 0.0f,
@@ -310,18 +355,31 @@ public:
 
 		const std::vector<uint32_t> indices = { 0, 1, 2 };
 
-		// Create the vertex buffer
-		auto buffer_create_info = vk::BufferCreateInfo{}
-			.setSize(sizeof(float) * vertices.size())
-			.setUsage(vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eRaytracingNVX);
+		// Describe how the memory associated with these buffers will be accessed
+		auto memory_properties = vk::MemoryPropertyFlagBits::eHostCoherent | vk::MemoryPropertyFlagBits::eHostVisible;
+
+		// Describe the intended usage of these buffers
+		auto vertex_buffer_usage = vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eRaytracingNVX;
+		auto index_buffer_usage = vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eRaytracingNVX;
 		
-		auto vertex_buffer = device->createBufferUnique(buffer_create_info);
+		// Create the buffers (and device memory)
+		vertex_buffer = create_buffer(sizeof(float) * vertices.size(), vertex_buffer_usage, memory_properties);
+		index_buffer = create_buffer(sizeof(uint32_t) * indices.size(), index_buffer_usage, memory_properties);
+		
+		LOG_DEBUG("Created vertex and index buffers");
 
-		// Reset usage flags for index buffer
-		buffer_create_info.setUsage(vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eRaytracingNVX);
+		size_t data_size = sizeof(float) * vertices.size();
+		void* data = device->mapMemory(vertex_buffer.device_memory.get(), 0, data_size);
+		memcpy(data, vertices.data(), data_size);
+		device->unmapMemory(vertex_buffer.device_memory.get());
 
-		// Create the index buffer
-		auto index_buffer = device->createBufferUnique(buffer_create_info);
+		data_size = sizeof(uint32_t) * indices.size();
+		data = device->mapMemory(index_buffer.device_memory.get(), 0, data_size);
+		memcpy(data, indices.data(), data_size);
+		device->unmapMemory(index_buffer.device_memory.get());
+
+		LOG_DEBUG("Uploaded vertex and index data to buffers");
+
 	}
 
 	// RTX
@@ -344,9 +402,9 @@ public:
 			physical_device.getProperties2(&physical_device_properties_2);
 
 			LOG_DEBUG("Physical device ray tracing properties:");
-			LOG_DEBUG("Max geometry count: " << physical_device_ray_tracing_properties.maxGeometryCount);
-			LOG_DEBUG("Max recursion depth: " << physical_device_ray_tracing_properties.maxRecursionDepth);
-			LOG_DEBUG("Shader header size: " << physical_device_ray_tracing_properties.shaderHeaderSize);
+			LOG_DEBUG("		Max geometry count: " << physical_device_ray_tracing_properties.maxGeometryCount);
+			LOG_DEBUG("		Max recursion depth: " << physical_device_ray_tracing_properties.maxRecursionDepth);
+			LOG_DEBUG("		Shader header size: " << physical_device_ray_tracing_properties.shaderHeaderSize);
 		}
 
 		// Load the 3 shader modules that will be used to build the RTX pipeline
@@ -590,6 +648,8 @@ private:
 	vk::UniquePipelineLayout pipeline_layout;
 	vk::UniquePipeline pipeline;
 
+	Buffer vertex_buffer;
+	Buffer index_buffer;
 	vk::UniqueDescriptorSetLayout descriptor_set_layout;
 	vk::UniquePipelineLayout raytracing_pipeline_layout;
 	vk::UniqueHandle<vk::Pipeline, vk::DispatchLoaderDynamic> raytracing_pipeline;
