@@ -342,6 +342,16 @@ public:
 
 		return Buffer{ std::move(buffer), std::move(device_memory) };
 	}
+	
+	template<class T>
+	void upload(const Buffer& buffer, const std::vector<T>& data)
+	{
+		size_t upload_size = sizeof(T) * data.size();
+
+		void* ptr = device->mapMemory(buffer.device_memory.get(), 0, upload_size);
+		memcpy(ptr, data.data(), upload_size);
+		device->unmapMemory(buffer.device_memory.get());
+	}
 
 	// RTX
 	void initialize_rtx_geometry()
@@ -368,18 +378,26 @@ public:
 		
 		LOG_DEBUG("Created vertex and index buffers");
 
-		size_t data_size = sizeof(float) * vertices.size();
-		void* data = device->mapMemory(vertex_buffer.device_memory.get(), 0, data_size);
-		memcpy(data, vertices.data(), data_size);
-		device->unmapMemory(vertex_buffer.device_memory.get());
-
-		data_size = sizeof(uint32_t) * indices.size();
-		data = device->mapMemory(index_buffer.device_memory.get(), 0, data_size);
-		memcpy(data, indices.data(), data_size);
-		device->unmapMemory(index_buffer.device_memory.get());
+		upload(vertex_buffer, vertices);
+		upload(index_buffer, indices);
 
 		LOG_DEBUG("Uploaded vertex and index data to buffers");
 
+		auto geometry_triangles = vk::GeometryTrianglesNVX{}
+			.setIndexCount(3)
+			.setIndexData(index_buffer.buffer.get())
+			.setIndexType(vk::IndexType::eUint32)
+			.setVertexCount(3)
+			.setVertexData(vertex_buffer.buffer.get())
+			.setVertexFormat(vk::Format::eR32G32B32Sfloat)
+			.setVertexStride(sizeof(float) * 3);
+
+		auto geometry_data = vk::GeometryDataNVX{ geometry_triangles };
+
+		// By default, the geometry type is set to triangles
+		auto geometry = vk::GeometryNVX{}
+			.setFlags(vk::GeometryFlagBitsNVX::eOpaque)
+			.setGeometry(geometry_data);
 	}
 
 	// RTX
