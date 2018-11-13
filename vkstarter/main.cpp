@@ -89,6 +89,32 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugReportFlagsEXT flags, VkDeb
 class Application
 {
 public:
+
+	struct Buffer
+	{
+		vk::UniqueBuffer buffer;
+		vk::UniqueDeviceMemory device_memory;
+	};
+
+	struct AccelerationStructure
+	{
+		vk::UniqueHandle<vk::AccelerationStructureNVX, vk::DispatchLoaderDynamic> accel;
+		vk::UniqueDeviceMemory device_memory;
+		uint64_t handle;
+		vk::MemoryRequirements2KHR scratch_memory_requirements;
+		vk::AccelerationStructureTypeNVX type;
+	};
+
+	struct VkGeometryInstance 
+	{
+		float transform[12];
+		uint32_t instanceId : 24;
+		uint32_t mask : 8;
+		uint32_t instanceOffset : 24;
+		uint32_t flags : 8;
+		uint64_t accelerationStructureHandle;
+	};
+
 	Application(uint32_t width, uint32_t height, const std::string& name) :
 		width{ width }, height{ height }, name{ name }
 	{
@@ -152,6 +178,9 @@ public:
 		initialize_pipeline();
 		initialize_framebuffers();
 		initialize_command_pool();
+
+		initialize_rtx_acceleration_structures(); // Needs to happen after command pool allocation
+
 		initialize_command_buffers();
 		initialize_synchronization_primitives();
 	}
@@ -300,13 +329,7 @@ public:
 		render_pass = device->createRenderPassUnique(render_pass_create_info);
 	}
 
-	struct Buffer
-	{
-		vk::UniqueBuffer buffer;
-		vk::UniqueDeviceMemory device_memory;
-	};
-
-	uint32_t find_memory_type(uint32_t types, vk::MemoryPropertyFlags memory_properties)
+	uint32_t find_memory_type(const vk::MemoryRequirements& memory_requirements, vk::MemoryPropertyFlags memory_properties)
 	{
 		// Query available memory types
 		auto physical_device_memory_properties = physical_device.getMemoryProperties();
@@ -314,7 +337,7 @@ public:
 		// Find a suitable memory type for this buffer
 		for (uint32_t i = 0; i < physical_device_memory_properties.memoryTypeCount; i++)
 		{
-			if ((types & (1 << i)) &&
+			if ((memory_requirements.memoryTypeBits & (1 << i)) &&
 				(physical_device_memory_properties.memoryTypes[i].propertyFlags & memory_properties) == memory_properties)
 			{
 				return i;
@@ -331,7 +354,7 @@ public:
 
 		// Figure out memory requirements for this buffer
 		auto memory_requirements = device->getBufferMemoryRequirements(buffer.get());
-		uint32_t memory_type_index = find_memory_type(memory_requirements.memoryTypeBits, memory_properties);
+		uint32_t memory_type_index = find_memory_type(memory_requirements, memory_properties);
 
 		// Allocate memory from the heap corresponding to the specified memory type index
 		auto memory_allocate_info = vk::MemoryAllocateInfo{ memory_requirements.size, memory_type_index };
@@ -382,7 +405,46 @@ public:
 		upload(index_buffer, indices);
 
 		LOG_DEBUG("Uploaded vertex and index data to buffers");
+	}
 
+	AccelerationStructure build_accel(vk::AccelerationStructureTypeNVX type,
+								      vk::ArrayProxy<const vk::GeometryNVX> geometries, 
+								      uint32_t instance_count)
+	{
+		// First, create the acceleration structure
+		auto as_create_info = vk::AccelerationStructureCreateInfoNVX{}
+			.setType(type)
+			.setGeometryCount(geometries.size())
+			.setPGeometries(geometries.data())
+			.setInstanceCount(instance_count);
+
+		auto accel = device->createAccelerationStructureNVXUnique(as_create_info, nullptr, dispatch_loader);
+
+		// Then, get the memory requirements for the newly created acceleration structure
+		auto accel_memory_requirements_info = vk::AccelerationStructureMemoryRequirementsInfoNVX{ accel.get() };
+		auto accel_memory_requirements = device->getAccelerationStructureMemoryRequirementsNVX(accel_memory_requirements_info, dispatch_loader);
+
+		// Allocate memory for this acceleration structure, which will reside in device local memory
+		uint32_t memory_type_index = find_memory_type(accel_memory_requirements.memoryRequirements, vk::MemoryPropertyFlagBits::eDeviceLocal);
+		auto memory_allocate_info = vk::MemoryAllocateInfo{ accel_memory_requirements.memoryRequirements.size, memory_type_index };
+		auto device_memory = device->allocateMemoryUnique(memory_allocate_info);
+
+		// Bind the device memory to the acceleration structure
+		auto bind_as_memory_info = vk::BindAccelerationStructureMemoryInfoNVX{ accel.get(), device_memory.get() };
+		device->bindAccelerationStructureMemoryNVX(bind_as_memory_info, dispatch_loader);
+
+		// Get a handle to the acceleration structure
+		uint64_t handle = device->getAccelerationStructureHandleNVX(accel.get(), sizeof(uint64_t), dispatch_loader)[0];
+
+		// Get scratch memory requirements for this acceleration structure (useful later)
+		auto scratch_memory_requirements = device->getAccelerationStructureScratchMemoryRequirementsNVX(accel_memory_requirements_info, dispatch_loader);
+
+		return AccelerationStructure{ std::move(accel), std::move(device_memory), handle, scratch_memory_requirements, type };
+	}
+
+	// RTX
+	void initialize_rtx_acceleration_structures()
+	{
 		auto geometry_triangles = vk::GeometryTrianglesNVX{}
 			.setIndexCount(3)
 			.setIndexData(index_buffer.buffer.get())
@@ -398,12 +460,99 @@ public:
 		auto geometry = vk::GeometryNVX{}
 			.setFlags(vk::GeometryFlagBitsNVX::eOpaque)
 			.setGeometry(geometry_data);
-	}
 
-	// RTX
-	void initialize_rtx_acceleration_structures()
-	{
+		// Create the bottom and top-level acceleration structures for our scene
+		auto b_level = build_accel(vk::AccelerationStructureTypeNVX::eBottomLevel, geometry, 0);
+		auto t_level = build_accel(vk::AccelerationStructureTypeNVX::eTopLevel, {}, 1); // 1 instance
 
+
+		// Create a buffer to hold instance data
+		{
+			const std::vector<float> transform =
+			{
+				1.0f, 0.0f, 0.0f, 0.0f,
+				0.0f, 1.0f, 0.0f, 0.0f,
+				0.0f, 0.0f, 1.0f, 0.0f
+			};
+
+			// Not implemented in vulkan.hpp or vulkan.h?
+			VkGeometryInstance instance;
+			std::memcpy(instance.transform, transform.data(), sizeof(transform));
+			instance.instanceId = 0;
+			instance.mask = 0xff;
+			instance.instanceOffset = 0;
+			instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_CULL_DISABLE_BIT_NVX;
+			instance.accelerationStructureHandle = b_level.handle;
+
+			const std::vector<VkGeometryInstance> instances = { instance };
+
+			instance_buffer = create_buffer(sizeof(instance), vk::BufferUsageFlagBits::eRaytracingNVX, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+			upload(instance_buffer, instances);
+		}
+
+
+		// Create a buffer for scratch memory, then build the acceleration structures
+		{
+			const vk::DeviceSize scratch_buffer_size = std::max(b_level.scratch_memory_requirements.memoryRequirements.size,
+																t_level.scratch_memory_requirements.memoryRequirements.size);
+
+			scratch_buffer = create_buffer(scratch_buffer_size, vk::BufferUsageFlagBits::eRaytracingNVX, vk::MemoryPropertyFlagBits::eDeviceLocal);
+		}
+
+		LOG_DEBUG("Allocated acceleration structures");
+
+
+		// Record and submit a command buffer that will build the acceleration structures
+		{
+			auto command_buffer = std::move(device->allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo{ command_pool.get(), vk::CommandBufferLevel::ePrimary, 1 })[0]);
+			command_buffer->begin({ vk::CommandBufferUsageFlagBits::eOneTimeSubmit });
+
+			auto begin = vk::CommandBufferBeginInfo{ vk::CommandBufferUsageFlagBits::eOneTimeSubmit };
+
+			auto memory_barrier = vk::MemoryBarrier{ vk::AccessFlagBits::eAccelerationStructureWriteNVX | vk::AccessFlagBits::eAccelerationStructureReadNVX,
+													 vk::AccessFlagBits::eAccelerationStructureWriteNVX | vk::AccessFlagBits::eAccelerationStructureReadNVX };
+
+			// Build bottom-level acceleration structure
+			command_buffer->buildAccelerationStructureNVX(
+				b_level.type,
+				0, 
+				{}, 
+				0, 
+				geometry, 
+				{}, 
+				false, 
+				b_level.accel.get(), 
+				{}, 
+				scratch_buffer.buffer.get(), 
+				0, 
+				dispatch_loader);
+
+			command_buffer->pipelineBarrier(vk::PipelineStageFlagBits::eRaytracingNVX, vk::PipelineStageFlagBits::eRaytracingNVX, {}, memory_barrier, {}, {});
+
+			// Build top-level acceleration structure
+			command_buffer->buildAccelerationStructureNVX(
+				t_level.type,
+				1,
+				instance_buffer.buffer.get(),
+				0,
+				{},
+				{},
+				false,
+				t_level.accel.get(),
+				{},
+				scratch_buffer.buffer.get(),
+				0,
+				dispatch_loader);
+
+			command_buffer->pipelineBarrier(vk::PipelineStageFlagBits::eRaytracingNVX, vk::PipelineStageFlagBits::eRaytracingNVX, {}, memory_barrier, {}, {});
+
+			// Submit and wait
+			command_buffer->end();
+			queue.submit(vk::SubmitInfo{ 0, nullptr, nullptr, 1, &command_buffer.get() }, {});
+			queue.waitIdle();
+		}
+
+		LOG_DEBUG("Built bottom and top-level acceleration structures");
 	}
 
 	// RTX
@@ -668,6 +817,8 @@ private:
 
 	Buffer vertex_buffer;
 	Buffer index_buffer;
+	Buffer instance_buffer;
+	Buffer scratch_buffer;
 	vk::UniqueDescriptorSetLayout descriptor_set_layout;
 	vk::UniquePipelineLayout raytracing_pipeline_layout;
 	vk::UniqueHandle<vk::Pipeline, vk::DispatchLoaderDynamic> raytracing_pipeline;
