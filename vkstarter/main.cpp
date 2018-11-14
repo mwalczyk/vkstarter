@@ -96,6 +96,13 @@ public:
 		vk::UniqueDeviceMemory device_memory;
 	};
 
+	struct Image
+	{
+		vk::UniqueImage image;
+		vk::UniqueDeviceMemory device_memory;
+		vk::UniqueImageView image_view;
+	};
+
 	struct AccelerationStructure
 	{
 		vk::UniqueHandle<vk::AccelerationStructureNVX, vk::DispatchLoaderDynamic> accel;
@@ -171,15 +178,24 @@ public:
 		initialize_render_pass();
 
 
+		// RTX
+		initialize_rtx_storage_image();
 		initialize_rtx_geometry();
 		initialize_rtx_pipeline();
+		initialize_rtx_shader_binding_table();
 		
+
 
 		initialize_pipeline();
 		initialize_framebuffers();
 		initialize_command_pool();
 
+
+		// RTX
 		initialize_rtx_acceleration_structures(); // Needs to happen after command pool allocation
+		initialize_rtx_descriptor_set();
+
+
 
 		initialize_command_buffers();
 		initialize_synchronization_primitives();
@@ -239,13 +255,21 @@ public:
 		// Save the index of the chosen queue family
 		queue_family_index = queue_create_info.queueFamilyIndex;
 
+		// Enable any "special" device features that we might need
+		vk::PhysicalDeviceFeatures physical_device_features;
+		physical_device_features.vertexPipelineStoresAndAtomics = true;
+		// Examples...
+		//physical_device_features.geometryShader = true;
+		//physical_device_features.imageCubeArray = true;
+
 		// Then, we construct a logical device around the chosen physical device
 		const std::vector<const char*> device_extensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_NVX_RAYTRACING_EXTENSION_NAME };
 		auto device_create_info = vk::DeviceCreateInfo{}
 			.setPQueueCreateInfos(&queue_create_info)
 			.setQueueCreateInfoCount(1)
 			.setPpEnabledExtensionNames(device_extensions.data())
-			.setEnabledExtensionCount(static_cast<uint32_t>(device_extensions.size()));
+			.setEnabledExtensionCount(static_cast<uint32_t>(device_extensions.size()))
+			.setPEnabledFeatures(&physical_device_features);
 
 		device = physical_device.createDeviceUnique(device_create_info);
 
@@ -275,7 +299,7 @@ public:
 			.setImageExtent(swapchain_extent)
 			.setImageFormat(swapchain_image_format)
 			.setImageArrayLayers(1)
-			.setImageUsage(vk::ImageUsageFlagBits::eColorAttachment)
+			.setImageUsage(vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst /* For RTX */)
 			.setMinImageCount(surface_capabilities.minImageCount + 1)
 			.setPreTransform(surface_capabilities.currentTransform)
 			.setClipped(true)
@@ -377,6 +401,42 @@ public:
 	}
 
 	// RTX
+	void initialize_rtx_storage_image()
+	{
+		// First, create the actual image
+		auto image_create_info = vk::ImageCreateInfo{}
+			.setArrayLayers(1)
+			.setExtent(vk::Extent3D{ width, height, 1 })
+			.setFormat(swapchain_image_format)
+			.setImageType(vk::ImageType::e2D)
+			.setMipLevels(1)
+			.setTiling(vk::ImageTiling::eOptimal)
+			.setUsage(vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferSrc);
+
+		auto image = device->createImageUnique(image_create_info);
+
+		// Then, allocate memory for the image
+		auto memory_requirements = device->getImageMemoryRequirements(image.get());
+		auto memory_allocate_info = vk::MemoryAllocateInfo{ memory_requirements.size, find_memory_type(memory_requirements, vk::MemoryPropertyFlagBits::eDeviceLocal) };
+		auto device_memory = device->allocateMemoryUnique(memory_allocate_info);
+
+		device->bindImageMemory(image.get(), device_memory.get(), 0);
+
+		// Finally, create an image view corresponding to this image
+		auto image_view_create_info = vk::ImageViewCreateInfo{}
+			.setImage(image.get())
+			.setViewType(vk::ImageViewType::e2D)
+			.setFormat(swapchain_image_format)
+			.setSubresourceRange(vk::ImageSubresourceRange{ vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 });
+
+		auto image_view = device->createImageViewUnique(image_view_create_info);
+
+		LOG_DEBUG("Successfully created offscreen image and image view");
+
+		offscreen_image = Image{ std::move(image), std::move(device_memory), std::move(image_view) };
+	}
+
+	// RTX
 	void initialize_rtx_geometry()
 	{
 		const std::vector<float> vertices =
@@ -462,8 +522,8 @@ public:
 			.setGeometry(geometry_data);
 
 		// Create the bottom and top-level acceleration structures for our scene
-		auto b_level = build_accel(vk::AccelerationStructureTypeNVX::eBottomLevel, geometry, 0);
-		auto t_level = build_accel(vk::AccelerationStructureTypeNVX::eTopLevel, {}, 1); // 1 instance
+		b_level = build_accel(vk::AccelerationStructureTypeNVX::eBottomLevel, geometry, 0);
+		t_level = build_accel(vk::AccelerationStructureTypeNVX::eTopLevel, {}, 1); // 1 instance
 
 
 		// Create a buffer to hold instance data
@@ -559,19 +619,18 @@ public:
 	void initialize_rtx_pipeline()
 	{
 		{
-			auto physical_device_ray_tracing_properties = vk::PhysicalDeviceRaytracingPropertiesNVX{};
 			auto physical_device_properties_2 = vk::PhysicalDeviceProperties2{};
 			
 			// Attach a pointer to the ray tracing struct extension
-			physical_device_properties_2.pNext = &physical_device_ray_tracing_properties;
+			physical_device_properties_2.pNext = &raytracing_properties;
 
 			// Finally, populate the structs 
 			physical_device.getProperties2(&physical_device_properties_2);
 
 			LOG_DEBUG("Physical device ray tracing properties:");
-			LOG_DEBUG("		Max geometry count: " << physical_device_ray_tracing_properties.maxGeometryCount);
-			LOG_DEBUG("		Max recursion depth: " << physical_device_ray_tracing_properties.maxRecursionDepth);
-			LOG_DEBUG("		Shader header size: " << physical_device_ray_tracing_properties.shaderHeaderSize);
+			LOG_DEBUG("		Max geometry count: " << raytracing_properties.maxGeometryCount);
+			LOG_DEBUG("		Max recursion depth: " << raytracing_properties.maxRecursionDepth);
+			LOG_DEBUG("		Shader header size: " << raytracing_properties.shaderHeaderSize);
 		}
 
 		// Load the 3 shader modules that will be used to build the RTX pipeline
@@ -631,7 +690,51 @@ public:
 	// RTX 
 	void initialize_rtx_shader_binding_table()
 	{
+		const uint32_t number_of_groups = 3;
+		const uint32_t table_size = raytracing_properties.shaderHeaderSize * number_of_groups;
 
+		shading_binding_table_buffer = create_buffer(table_size, vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eRaytracingNVX, vk::MemoryPropertyFlagBits::eHostVisible);
+		
+		void* ptr = device->mapMemory(shading_binding_table_buffer.device_memory.get(), 0, table_size);
+		device->getRaytracingShaderHandlesNVX(raytracing_pipeline.get(), 0, number_of_groups, table_size, dispatch_loader);
+		device->unmapMemory(shading_binding_table_buffer.device_memory.get());
+
+		LOG_DEBUG("Successfully created shader binding table");
+	}
+	
+	// RTX
+	void initialize_rtx_descriptor_set()
+	{
+		// First, create the descriptor pool
+		const std::vector<vk::DescriptorPoolSize> pool_sizes = 
+		{
+			vk::DescriptorPoolSize{ vk::DescriptorType::eAccelerationStructureNVX, 1 },
+			vk::DescriptorPoolSize{ vk::DescriptorType::eStorageImage, 1 }
+		};
+
+		descriptor_pool = device->createDescriptorPoolUnique(vk::DescriptorPoolCreateInfo{ {}, 1, 2, pool_sizes.data() });
+
+		// Then, allocate descriptor sets
+		descriptor_set = std::move(device->allocateDescriptorSetsUnique(vk::DescriptorSetAllocateInfo{ descriptor_pool.get(), 1, &descriptor_set_layout.get() })[0]);
+
+		// Finally, write to the newly allocated descriptor set
+		{
+			// Descriptor #0: top-level acceleration structure
+			auto descriptor_accel_info = vk::DescriptorAccelerationStructureInfoNVX{ 1, &t_level.accel.get() };
+			auto write_descriptor_0 = vk::WriteDescriptorSet{ descriptor_set.get(), 0, 0, 1, vk::DescriptorType::eAccelerationStructureNVX };
+			write_descriptor_0.setPNext(&descriptor_accel_info); // Notice that we write to pNext here!
+
+			// Descriptor #1: temporary storage image
+			auto descriptor_image_info = vk::DescriptorImageInfo{ {}, offscreen_image.image_view.get(), vk::ImageLayout::eGeneral };
+			auto write_descriptor_1 = vk::WriteDescriptorSet{ descriptor_set.get(), 1, 0, 1, vk::DescriptorType::eStorageImage };
+			write_descriptor_1.setPImageInfo(&descriptor_image_info);
+
+			// Gather write structs and update
+			const std::vector<vk::WriteDescriptorSet> writes = { write_descriptor_0, write_descriptor_1 };
+			device->updateDescriptorSets(writes, {});
+		}
+
+		LOG_DEBUG("Wrote to descriptor set");
 	}
 
 	void initialize_pipeline()
@@ -727,6 +830,27 @@ public:
 		LOG_DEBUG("Allocated [ " << command_buffers.size() << " ] command buffers");
 	}
 
+	void image_barrier(vk::CommandBuffer command_buffer,
+					   vk::Image image,
+					   const vk::ImageSubresourceRange& subresource,
+					   vk::AccessFlags src_access_mask,
+					   vk::AccessFlags dst_access_mask,
+					   vk::ImageLayout old_layout,
+					   vk::ImageLayout new_layout) 
+	{
+		vk::ImageMemoryBarrier image_memory_barrier;
+		image_memory_barrier.srcAccessMask = src_access_mask;
+		image_memory_barrier.dstAccessMask = dst_access_mask;
+		image_memory_barrier.oldLayout = old_layout;
+		image_memory_barrier.newLayout = new_layout;
+		image_memory_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		image_memory_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		image_memory_barrier.image = image;
+		image_memory_barrier.subresourceRange = subresource;
+
+		command_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, image_memory_barrier);
+	}
+
 	void record_command_buffer(uint32_t index)
 	{
 		const vk::ClearValue clear = std::array<float, 4>{ 0.0f, 0.0f, 0.0f, 1.0f };
@@ -740,12 +864,74 @@ public:
 			static_cast<float>(height) 
 		};
 
+		const auto subresource = vk::ImageSubresourceRange{ vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+
 		command_buffers[index]->begin(vk::CommandBufferBeginInfo{ vk::CommandBufferUsageFlagBits::eSimultaneousUse });
-		command_buffers[index]->beginRenderPass(vk::RenderPassBeginInfo{ render_pass.get(), framebuffers[index].get(), render_area, 1, &clear }, vk::SubpassContents::eInline);
-		command_buffers[index]->bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.get());
-		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(push_constants), &push_constants);
-		command_buffers[index]->draw(6, 1, 0, 0);
-		command_buffers[index]->endRenderPass();
+		{
+			//command_buffers[index]->beginRenderPass(vk::RenderPassBeginInfo{ render_pass.get(), framebuffers[index].get(), render_area, 1, &clear }, vk::SubpassContents::eInline);
+			//command_buffers[index]->bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.get());
+			//command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(push_constants), &push_constants);
+			//command_buffers[index]->draw(6, 1, 0, 0);
+			//command_buffers[index]->endRenderPass();
+			//command_buffers[index]->end();
+		}
+		// Raytrace
+		{
+			image_barrier(command_buffers[index].get(),
+						  offscreen_image.image.get(),
+						  subresource,
+						  {},
+						  vk::AccessFlagBits::eShaderWrite,
+						  vk::ImageLayout::eUndefined,
+						  vk::ImageLayout::eGeneral);
+
+			command_buffers[index]->bindPipeline(vk::PipelineBindPoint::eRaytracingNVX, raytracing_pipeline.get());
+			command_buffers[index]->bindDescriptorSets(vk::PipelineBindPoint::eRaytracingNVX, raytracing_pipeline_layout.get(), 0, descriptor_set.get(), {});
+			command_buffers[index]->traceRaysNVX(shading_binding_table_buffer.buffer.get(), 0,
+												 shading_binding_table_buffer.buffer.get(), 2 * raytracing_properties.shaderHeaderSize, raytracing_properties.shaderHeaderSize,
+												 shading_binding_table_buffer.buffer.get(), 1 * raytracing_properties.shaderHeaderSize, raytracing_properties.shaderHeaderSize,
+												 width, height, dispatch_loader);
+
+			image_barrier(command_buffers[index].get(),
+						  swapchain_images[index],
+						  subresource,
+						  {},
+						  vk::AccessFlagBits::eTransferWrite,
+						  vk::ImageLayout::eUndefined,
+						  vk::ImageLayout::eTransferDstOptimal);
+
+			image_barrier(command_buffers[index].get(),
+						  offscreen_image.image.get(),
+						  subresource,
+						  vk::AccessFlagBits::eShaderWrite,
+						  vk::AccessFlagBits::eTransferRead,
+						  vk::ImageLayout::eGeneral,
+						  vk::ImageLayout::eTransferSrcOptimal);
+
+			// Copy image contents
+			auto image_copy = vk::ImageCopy{}
+				.setSrcSubresource(vk::ImageSubresourceLayers{ vk::ImageAspectFlagBits::eColor, 0, 0, 1 })
+				.setSrcOffset({ 0, 0, 0 })
+				.setDstSubresource(vk::ImageSubresourceLayers{ vk::ImageAspectFlagBits::eColor, 0, 0, 1 })
+				.setDstOffset({ 0, 0, 0 })
+				.setExtent({ width, height, 1 });
+
+			command_buffers[index]->copyImage(offscreen_image.image.get(), 
+											  vk::ImageLayout::eTransferSrcOptimal,
+											  swapchain_images[index], 
+											  vk::ImageLayout::eTransferDstOptimal,
+											  image_copy);
+
+			// Final barrier before viewing
+			image_barrier(command_buffers[index].get(),
+						  swapchain_images[index],
+						  subresource,
+						  vk::AccessFlagBits::eTransferWrite,
+						  {},
+						  vk::ImageLayout::eTransferDstOptimal,
+						  vk::ImageLayout::ePresentSrcKHR);
+		}
+
 		command_buffers[index]->end();
 	}
 
@@ -819,9 +1005,19 @@ private:
 	Buffer index_buffer;
 	Buffer instance_buffer;
 	Buffer scratch_buffer;
+	Buffer shading_binding_table_buffer;
 	vk::UniqueDescriptorSetLayout descriptor_set_layout;
+	vk::PhysicalDeviceRaytracingPropertiesNVX raytracing_properties;
 	vk::UniquePipelineLayout raytracing_pipeline_layout;
 	vk::UniqueHandle<vk::Pipeline, vk::DispatchLoaderDynamic> raytracing_pipeline;
+
+	AccelerationStructure b_level;
+	AccelerationStructure t_level;
+
+	Image offscreen_image;
+
+	vk::UniqueDescriptorPool descriptor_pool;
+	vk::UniqueDescriptorSet  descriptor_set;
 
 	vk::UniqueCommandPool command_pool;
 	vk::UniqueSemaphore semaphore_image_available;
