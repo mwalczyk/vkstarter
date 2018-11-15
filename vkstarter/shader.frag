@@ -19,5 +19,5 @@ void main()
 	float modulate = sin(push_constants.time) * 0.5 + 0.5;
 	vec2 screen_color = gl_FragCoord.xy / push_constants.resolution;
 
-    o_color = vec4(screen_color * modulate, 0.0, 1.0);
+    o_color = vec4(vec3(1.0f - color.x - color.y, color.x, color.y) * modulate, 1.0);
 }

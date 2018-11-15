@@ -34,5 +34,5 @@ void main()
              tmax,
              payload_location);
 
-    imageStore(result_image, ivec2(gl_LaunchIDNVX.xy), vec4(vec3(1.0, 0.0, 0.0), 1.0f));//result_color
+    imageStore(result_image, ivec2(gl_LaunchIDNVX.xy), vec4(result_color, 1.0f));
 }

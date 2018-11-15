@@ -6,18 +6,20 @@ out gl_PerVertex
     vec4 gl_Position;
 };
 
+layout(location = 0) in vec3 position;
+
 layout(location = 0) out vec3 color;
-
-// draws a fullscreen quad
-const vec2 positions[6] = vec2[](vec2(-1.0,  1.0),   // lower left
-								 vec2(-1.0, -1.0),   // upper left
-								 vec2( 1.0, -1.0),   // upper right
-
-								 vec2(-1.0,  1.0),   // lower left
-								 vec2( 1.0, -1.0),   // upper right
-								 vec2( 1.0,  1.0));  // lower right
 
 void main() 
 {
-    gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
+	// Center and scale the triangle so that it matches 
+	vec3 scaled_position = position;
+	scaled_position.xy -= vec2(0.5);
+	scaled_position *= 2.0f;
+	scaled_position.y *= -1.0f;
+	
+	// Calculate fragment color from model-space position
+	color = position;
+
+    gl_Position = vec4(scaled_position, 1.0); 
 }

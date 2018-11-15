@@ -5,5 +5,6 @@ layout(location = 0) rayPayloadInNVX vec3 result_color;
 
 void main() 
 {
-    result_color = vec3(0.412f, 0.796f, 1.0f);
+	const vec3 background = vec3(0.0);
+    result_color = background;
 }
