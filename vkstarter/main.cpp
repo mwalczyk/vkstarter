@@ -1,6 +1,6 @@
 #include "utilities.h"
 
-#define RAYTRACING
+//#define RAYTRACING
 
 const size_t coordinates_per_vertex = 3;
 
@@ -61,11 +61,13 @@ public:
 		render_pass.reset();
 		pipeline.reset();
 
+#if defined(RAYTRACING)
 		offscreen_image.image.reset();
 		offscreen_image.image_view.reset();
 		offscreen_image.device_memory.reset();
 		shader_binding_table_buffer.buffer.reset();
 		shader_binding_table_buffer.device_memory.reset();
+#endif
 
 		// We do not need to explicitly clear the framebuffers or swapchain image views, since that is taken
 		// care of by the `initialize_*()` methods below
@@ -197,6 +199,7 @@ public:
 
 	void initialize_swapchain()
 	{
+		// Record surface details
 		surface_details.capabilities = physical_device.getSurfaceCapabilitiesKHR(surface.get());
 		surface_details.formats = physical_device.getSurfaceFormatsKHR(surface.get());
 		surface_details.present_modes = physical_device.getSurfacePresentModesKHR(surface.get());
@@ -227,10 +230,9 @@ public:
 		// Create an image view for each image in the swapchain
 		swapchain_image_views.clear();
 
-		const auto subresource_range = vk::ImageSubresourceRange{ vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
 		for (const auto& image : swapchain_images)
 		{
-			auto image_view_create_info = vk::ImageViewCreateInfo{ {}, image, vk::ImageViewType::e2D, swapchain_details.image_format, {}, subresource_range };
+			auto image_view_create_info = vk::ImageViewCreateInfo{ {}, image, vk::ImageViewType::e2D, swapchain_details.image_format, {}, get_single_layer_resource() };
 			swapchain_image_views.push_back(device->createImageViewUnique(image_view_create_info));
 		}
 		LOG_DEBUG("Created [ " << swapchain_image_views.size() << " ] image views");
@@ -349,6 +351,18 @@ public:
 	{
 		const std::string path_prefix = "";
 		const char* entry_point = "main";
+
+		// Create a pipeline layout (this can be shared across the graphics and raytracing pipelines)
+		auto push_constant_range = vk::PushConstantRange{}
+			.setOffset(0)
+			.setSize(sizeof(PushConstants))
+#if defined(RAYTRACING)
+			.setStageFlags(vk::ShaderStageFlagBits::eClosestHitNVX);
+#else
+			.setStageFlags(vk::ShaderStageFlagBits::eFragment);
+#endif
+		pipeline_layout = device->createPipelineLayoutUnique(vk::PipelineLayoutCreateInfo{ {}, 1, &descriptor_set_layout.get(), 1, &push_constant_range });
+
 #if defined(RAYTRACING)
 		// Retrieve information about this system's raytracing capabilities
 		{
@@ -366,12 +380,9 @@ public:
 		}
 
 		// Load the 3 shader modules that will be used to build the raytracing pipeline
-		const std::string rgen_spv_path = path_prefix + "rgen.spv";
-		const std::string chit_spv_path = path_prefix + "rchit.spv";
-		const std::string miss_spv_path = path_prefix + "rmiss.spv";
-		auto rgen_module = load_spv_into_module(device, rgen_spv_path);
-		auto chit_module = load_spv_into_module(device, chit_spv_path);
-		auto miss_module = load_spv_into_module(device, miss_spv_path);
+		auto rgen_module = load_spv_into_module(device, path_prefix + "rgen.spv");
+		auto chit_module = load_spv_into_module(device, path_prefix + "rchit.spv");
+		auto miss_module = load_spv_into_module(device, path_prefix + "rmiss.spv");
 		LOG_DEBUG("Successfully loaded RTX shader modules");
 
 		// Gather shader stage create infos
@@ -379,11 +390,6 @@ public:
 		auto chit_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eClosestHitNVX, chit_module.get(), entry_point };
 		auto miss_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eMissNVX, miss_module.get(), entry_point };
 		const std::vector<vk::PipelineShaderStageCreateInfo> shader_stage_create_infos = { rgen_stage_create_info, chit_stage_create_info, miss_stage_create_info };
-
-		// Create a pipeline layout for the RTX pipeline
-		auto push_constant_range = vk::PushConstantRange{ vk::ShaderStageFlagBits::eClosestHitNVX, 0, sizeof(float) * 4 };
-		auto pipeline_layout_create_info = vk::PipelineLayoutCreateInfo{ {}, 1, &descriptor_set_layout.get(), 1, &push_constant_range };
-		pipeline_layout = device->createPipelineLayoutUnique(pipeline_layout_create_info);
 
 		// Group 0: raygen
 		// Group 1: closest hit
@@ -401,25 +407,15 @@ public:
 		pipeline = device->createRaytracingPipelineNVXUnique({}, raytracing_pipeline_create_info, nullptr, dispatch_loader);
 		LOG_DEBUG("Successfully created raytracing pipeline");
 #else
-		// First, load the shader modules
-		const std::string vs_spv_path = path_prefix + "vert.spv";
-		const std::string fs_spv_path = path_prefix + "frag.spv";
-		auto vs_module = load_spv_into_module(device, vs_spv_path);
-		auto fs_module = load_spv_into_module(device, fs_spv_path);
+		// Load the 2 shader modules that will be used to build the graphics pipeline
+		auto vs_module = load_spv_into_module(device, path_prefix + "vert.spv");
+		auto fs_module = load_spv_into_module(device, path_prefix + "frag.spv");
 		LOG_DEBUG("Successfully loaded shader modules");
-		
-		// Then, create a pipeline layout
-		auto push_constant_range = vk::PushConstantRange{ vk::ShaderStageFlagBits::eFragment, 0, sizeof(float) * 4 };
-		auto pipeline_layout_create_info = vk::PipelineLayoutCreateInfo{}
-			.setPPushConstantRanges(&push_constant_range)
-			.setPushConstantRangeCount(1);
 
-		pipeline_layout = device->createPipelineLayoutUnique(pipeline_layout_create_info /* Add additional push constants or descriptor sets here */ );
-
-		// Finally, create the pipeline
+		// Gather shader stage create infos
 		auto vs_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eVertex, vs_module.get(), entry_point };
 		auto fs_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eFragment, fs_module.get(), entry_point };
-		const vk::PipelineShaderStageCreateInfo shader_stage_create_infos[] = { vs_stage_create_info, fs_stage_create_info };
+		const std::vector<vk::PipelineShaderStageCreateInfo> shader_stage_create_infos = { vs_stage_create_info, fs_stage_create_info };
 
 		auto vertex_input_binding_description = vk::VertexInputBindingDescription{ 0, sizeof(vertices[0]) * coordinates_per_vertex };
 		auto vertex_input_attribute_description = vk::VertexInputAttributeDescription{ 0, 0, vk::Format::eR32G32B32Sfloat };
@@ -451,10 +447,11 @@ public:
 			.setPAttachments(&color_blend_attachment_state)
 			.setAttachmentCount(1);
 
+		// Build a graphics pipeline object
 		auto graphics_pipeline_create_info = vk::GraphicsPipelineCreateInfo{ 
 			{}, 
-			2, 
-			shader_stage_create_infos, 
+			static_cast<uint32_t>(shader_stage_create_infos.size()),
+			shader_stage_create_infos.data(), 
 			&vertex_input_state_create_info,
 			&input_assembly_create_info, 
 			nullptr, /* Add tessellation state here */
@@ -805,7 +802,7 @@ public:
 		command_buffers[index]->bindVertexBuffers(0, vertex_buffer.buffer.get(), vk::DeviceSize{ 0 });
 		command_buffers[index]->bindIndexBuffer(index_buffer.buffer.get(), 0, vk::IndexType::eUint32);
 		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(push_constants), &push_constants);
-		command_buffers[index]->drawIndexed(indices.size(), 1, 0, 0, 0);
+		command_buffers[index]->drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
 		command_buffers[index]->endRenderPass();
 #endif
 		command_buffers[index]->end();
