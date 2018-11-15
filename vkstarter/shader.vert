@@ -1,4 +1,4 @@
-#version 450
+#version 460
 #extension GL_ARB_separate_shader_objects : enable
 
 out gl_PerVertex 
@@ -17,7 +17,7 @@ void main()
 	scaled_position.xy -= vec2(0.5);
 	scaled_position *= 2.0f;
 	scaled_position.y *= -1.0f;
-	
+
 	// Calculate fragment color from model-space position
 	color = position;
 
