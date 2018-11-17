@@ -12,11 +12,9 @@ layout(location = 0) out vec3 color;
 
 void main() 
 {
-	// Center and scale the triangle so that it matches 
+	// Render the geometry orthographically for now
 	vec3 scaled_position = position;
-	scaled_position.xy -= vec2(0.5);
-	scaled_position *= 2.0f;
-	scaled_position.y *= -1.0f;
+	scaled_position.z = 0.0f;
 
 	// Calculate fragment color from model-space position
 	color = position;

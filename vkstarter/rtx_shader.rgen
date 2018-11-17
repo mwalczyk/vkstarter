@@ -1,17 +1,22 @@
 #version 460
 #extension GL_NVX_raytracing : require
 
+// See: https://github.com/KhronosGroup/GLSL/blob/master/extensions/nv/GLSL_NV_ray_tracing.txt
+
 layout(set = 0, binding = 0) uniform accelerationStructureNVX acceleration_structure;
 layout(set = 0, binding = 1, rgba8) uniform image2D result_image;
 
+// The ray payload object is an application-defined struct used to pass 
+// data between hit stages and the shader stage that spawned a ray
 layout(location = 0) rayPayloadNVX vec3 result_color;
 
 void main() 
 {
-    const vec2 uv = vec2(gl_LaunchIDNVX.xy) / vec2(gl_LaunchSizeNVX.xy - 1);
+    vec2 uv = vec2(gl_LaunchIDNVX.xy) / vec2(gl_LaunchSizeNVX.xy - 1);
+    uv = uv * 2.0 - 1.0;
 
-    const vec3 origin = vec3(uv.x, 1.0f - uv.y, -1.0f);
-    const vec3 direction = vec3(0.0f, 0.0f, 1.0f);
+    const vec3 origin = vec3(0.0f);
+    const vec3 direction = vec3(uv.x, uv.y, 1.0f);
 
     const uint ray_flags = gl_RayFlagsNoneNVX;
     const uint cull_mask = 0xFF;

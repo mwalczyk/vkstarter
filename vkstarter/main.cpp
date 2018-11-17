@@ -1,17 +1,6 @@
 #include "utilities.h"
 
-//#define RAYTRACING
-
-const size_t coordinates_per_vertex = 3;
-
-const std::vector<float> vertices =
-{
-	0.25f, 0.25f, 0.0f,
-	0.75f, 0.25f, 0.0f,
-	0.50f, 0.75f, 0.0f
-};
-
-const std::vector<uint32_t> indices = { 0, 1, 2 };
+#define RAYTRACING
 
 const std::vector<float> transform =
 {
@@ -19,6 +8,8 @@ const std::vector<float> transform =
 	0.0f, 1.0f, 0.0f, 0.0f,
 	0.0f, 0.0f, 1.0f, 0.0f
 };
+
+static const GeometryDefinition geometry_def = build_icosphere(0.5f, { 0.0f, 0.0f, 3.0f });
 
 class Application
 {
@@ -53,6 +44,8 @@ public:
 		int new_width;
 		int new_height;
 		glfwGetWindowSize(window_details.window, &new_width, &new_height);
+
+		// Store new window dimensions
 		window_details.width = new_width;
 		window_details.height = new_height;
 		LOG_DEBUG("Window resized to " + std::to_string(window_details.width) + " x " + std::to_string(window_details.height));
@@ -77,7 +70,7 @@ public:
 		initialize_pipeline();
 		initialize_framebuffers();
 #if defined(RAYTRACING)
-		initialize_storage_image();
+		initialize_offscreen_image();
 		initialize_shader_binding_table();
 #endif
 		update_descriptor_sets();
@@ -101,7 +94,7 @@ public:
 #if defined(RAYTRACING)
 		// The scene must be created after command pool allocation, since it submits a series
 		// of command buffers to build the acceleration structures
-		initialize_storage_image();
+		initialize_offscreen_image();
 		initialize_shader_binding_table();
 		initialize_scene(); 
 #endif
@@ -127,9 +120,11 @@ public:
 	void initialize_instance()
 	{
 		std::vector<const char*> layers;
-		std::vector<const char*> extensions{ VK_EXT_DEBUG_REPORT_EXTENSION_NAME, VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME };
+		std::vector<const char*> extensions{ VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME };
 #ifdef _DEBUG
+		// Only enable the standard validation layers if we are compiling for debug
 		layers.push_back("VK_LAYER_LUNARG_standard_validation");
+		extensions.push_back(VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
 #endif
 		auto application_info = vk::ApplicationInfo{ window_details.name.c_str(), VK_MAKE_VERSION(1, 0, 0), window_details.name.c_str(), VK_MAKE_VERSION(1, 0, 0), VK_API_VERSION_1_1 };
 
@@ -148,7 +143,7 @@ public:
 
 	void initialize_device()
 	{
-		// First, we select a physical device
+		// First, we select a physical device (here, we simply select the first device available)
 		auto physical_devices = instance->enumeratePhysicalDevices();
 		assert(!physical_devices.empty());
 		physical_device = physical_devices[0];
@@ -195,6 +190,7 @@ public:
 		auto surface_create_info = vk::Win32SurfaceCreateInfoKHR{ {}, GetModuleHandle(nullptr), glfwGetWin32Window(window_details.window) };
 
 		surface = instance->createWin32SurfaceKHRUnique(surface_create_info);
+		LOG_DEBUG("Successfully created window surface");
 	}
 
 	void initialize_swapchain()
@@ -325,12 +321,12 @@ public:
 		auto index_buffer_usage = vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eRaytracingNVX;
 
 		// Create the buffers (and device memory)
-		vertex_buffer = create_buffer(sizeof(vertices[0]) * vertices.size(), vertex_buffer_usage, memory_properties);
-		index_buffer = create_buffer(sizeof(indices[0]) * indices.size(), index_buffer_usage, memory_properties);
+		vertex_buffer = create_buffer(sizeof(geometry_def.vertices[0]) * geometry_def.vertices.size(), vertex_buffer_usage, memory_properties);
+		index_buffer = create_buffer(sizeof(geometry_def.indices[0]) * geometry_def.indices.size(), index_buffer_usage, memory_properties);
 		LOG_DEBUG("Created vertex and index buffers");
 
-		upload(vertex_buffer, vertices);
-		upload(index_buffer, indices);
+		upload(vertex_buffer, geometry_def.vertices);
+		upload(index_buffer, geometry_def.indices);
 		LOG_DEBUG("Uploaded vertex and index data to buffers");
 	}
 
@@ -391,14 +387,14 @@ public:
 		auto miss_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eMissNVX, miss_module.get(), entry_point };
 		const std::vector<vk::PipelineShaderStageCreateInfo> shader_stage_create_infos = { rgen_stage_create_info, chit_stage_create_info, miss_stage_create_info };
 
-		// Group 0: raygen
+		// Group 0: ray generation
 		// Group 1: closest hit
 		// Group 2: miss
 		const uint32_t group_numbers[] = { 0, 1, 2 };
 
 		// Build a ray tracing pipeline object
 		auto raytracing_pipeline_create_info = vk::RaytracingPipelineCreateInfoNVX{}
-			.setStageCount(shader_stage_create_infos.size())
+			.setStageCount(static_cast<uint32_t>(shader_stage_create_infos.size()))
 			.setPStages(shader_stage_create_infos.data())
 			.setPGroupNumbers(group_numbers)
 			.setLayout(pipeline_layout.get())
@@ -417,7 +413,7 @@ public:
 		auto fs_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eFragment, fs_module.get(), entry_point };
 		const std::vector<vk::PipelineShaderStageCreateInfo> shader_stage_create_infos = { vs_stage_create_info, fs_stage_create_info };
 
-		auto vertex_input_binding_description = vk::VertexInputBindingDescription{ 0, sizeof(vertices[0]) * coordinates_per_vertex };
+		auto vertex_input_binding_description = vk::VertexInputBindingDescription{ 0, sizeof(geometry_def.vertices[0]) };
 		auto vertex_input_attribute_description = vk::VertexInputAttributeDescription{ 0, 0, vk::Format::eR32G32B32Sfloat };
 		auto vertex_input_state_create_info = vk::PipelineVertexInputStateCreateInfo{}
 			.setVertexBindingDescriptionCount(1)
@@ -473,9 +469,11 @@ public:
 	void initialize_framebuffers()
 	{
 		framebuffers.clear();
+
+		auto framebuffer_create_info = vk::FramebufferCreateInfo{ {}, render_pass.get(), 1, {}, window_details.width, window_details.height, 1 };
 		for (const auto& image_view : swapchain_image_views)
 		{
-			auto framebuffer_create_info = vk::FramebufferCreateInfo{ {}, render_pass.get(), 1, &image_view.get(), window_details.width, window_details.height, 1 };
+			framebuffer_create_info.setPAttachments(&image_view.get());
 			framebuffers.push_back(device->createFramebufferUnique(framebuffer_create_info));
 		}
 		LOG_DEBUG("Created [ " << framebuffers.size() << " ] framebuffers");
@@ -484,6 +482,7 @@ public:
 	void initialize_command_pool()
 	{
 		command_pool = device->createCommandPoolUnique(vk::CommandPoolCreateInfo{ vk::CommandPoolCreateFlagBits::eResetCommandBuffer, queue_family_index });
+		LOG_DEBUG("Successfully created command pool");
 	}
 
 	void initialize_command_buffers()
@@ -504,7 +503,7 @@ public:
 		}
 	}
 #if defined(RAYTRACING)
-	void initialize_storage_image()
+	void initialize_offscreen_image()
 	{
 		// First, create the actual image
 		auto image_create_info = vk::ImageCreateInfo{}
@@ -589,13 +588,13 @@ public:
 	void initialize_scene()
 	{
 		auto geometry_triangles = vk::GeometryTrianglesNVX{}
-			.setIndexCount(indices.size())
+			.setIndexCount(static_cast<uint32_t>(geometry_def.indices.size()))
 			.setIndexData(index_buffer.buffer.get())
 			.setIndexType(vk::IndexType::eUint32)
-			.setVertexCount(vertices.size() / coordinates_per_vertex)
+			.setVertexCount(static_cast<uint32_t>(geometry_def.vertices.size()))
 			.setVertexData(vertex_buffer.buffer.get())
 			.setVertexFormat(vk::Format::eR32G32B32Sfloat)
-			.setVertexStride(coordinates_per_vertex * sizeof(vertices[0]));
+			.setVertexStride(sizeof(geometry_def.vertices[0]));
 
 		auto geometry_data = vk::GeometryDataNVX{ geometry_triangles };
 		auto geometry = vk::GeometryNVX{ vk::GeometryTypeNVX::eTriangles, geometry_data, vk::GeometryFlagBitsNVX::eOpaque };
@@ -623,8 +622,7 @@ public:
 
 		// Create a buffer for scratch memory, then build the acceleration structures
 		{
-			const vk::DeviceSize scratch_buffer_size = std::max(b_level.scratch_memory_requirements.memoryRequirements.size,
-				t_level.scratch_memory_requirements.memoryRequirements.size);
+			const vk::DeviceSize scratch_buffer_size = std::max(b_level.scratch_memory_requirements.memoryRequirements.size, t_level.scratch_memory_requirements.memoryRequirements.size);
 
 			scratch_buffer = create_buffer(scratch_buffer_size, vk::BufferUsageFlagBits::eRaytracingNVX, vk::MemoryPropertyFlagBits::eDeviceLocal);
 		}
@@ -634,8 +632,6 @@ public:
 		{
 			auto command_buffer = std::move(device->allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo{ command_pool.get(), vk::CommandBufferLevel::ePrimary, 1 })[0]);
 			command_buffer->begin({ vk::CommandBufferUsageFlagBits::eOneTimeSubmit });
-
-			auto begin = vk::CommandBufferBeginInfo{ vk::CommandBufferUsageFlagBits::eOneTimeSubmit };
 
 			auto memory_barrier = vk::MemoryBarrier{ vk::AccessFlagBits::eAccelerationStructureWriteNVX | vk::AccessFlagBits::eAccelerationStructureReadNVX,
 													 vk::AccessFlagBits::eAccelerationStructureWriteNVX | vk::AccessFlagBits::eAccelerationStructureReadNVX };
@@ -749,7 +745,7 @@ public:
 					  vk::ImageLayout::eGeneral);
 
 		command_buffers[index]->bindPipeline(vk::PipelineBindPoint::eRaytracingNVX, pipeline.get());
-		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eClosestHitNVX, 0, sizeof(push_constants), &push_constants);
+		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eClosestHitNVX, 0, sizeof(PushConstants), &push_constants);
 		command_buffers[index]->bindDescriptorSets(vk::PipelineBindPoint::eRaytracingNVX, pipeline_layout.get(), 0, descriptor_set.get(), {});
 		command_buffers[index]->traceRaysNVX(shader_binding_table_buffer.buffer.get(), 0,
 											 shader_binding_table_buffer.buffer.get(), 2 * raytracing_properties.shaderHeaderSize, raytracing_properties.shaderHeaderSize,
@@ -801,8 +797,8 @@ public:
 		command_buffers[index]->bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.get());
 		command_buffers[index]->bindVertexBuffers(0, vertex_buffer.buffer.get(), vk::DeviceSize{ 0 });
 		command_buffers[index]->bindIndexBuffer(index_buffer.buffer.get(), 0, vk::IndexType::eUint32);
-		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(push_constants), &push_constants);
-		command_buffers[index]->drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
+		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(PushConstants), &push_constants);
+		command_buffers[index]->drawIndexed(static_cast<uint32_t>(geometry_def.indices.size()), 1, 0, 0, 0);
 		command_buffers[index]->endRenderPass();
 #endif
 		command_buffers[index]->end();
@@ -868,17 +864,18 @@ private:
 	Buffer shader_binding_table_buffer;
 
 	vk::UniqueDescriptorSetLayout descriptor_set_layout;
+	vk::UniquePipelineLayout pipeline_layout;
 #if defined(RAYTRACING)
 	Image offscreen_image;
 
 	vk::PhysicalDeviceRaytracingPropertiesNVX raytracing_properties;
-	vk::UniquePipelineLayout pipeline_layout;
+
 	vk::UniqueHandle<vk::Pipeline, vk::DispatchLoaderDynamic> pipeline;
 
 	AccelerationStructure b_level;
 	AccelerationStructure t_level;
 #else
-	vk::UniquePipelineLayout pipeline_layout;
+	// The additional dispatch loader template parameter is not needed for a graphics pipeline
 	vk::UniquePipeline pipeline;
 #endif
 	vk::UniqueDescriptorPool descriptor_pool;

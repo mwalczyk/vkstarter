@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <sstream>
@@ -10,6 +11,8 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include "glfw3.h"
 #include "glfw3native.h"
+
+#include "glm.hpp"
 
 #define VK_USE_PLATFORM_WIN32_KHR
 #include "vulkan/vulkan.hpp"
@@ -165,3 +168,97 @@ vk::ImageSubresourceRange get_single_layer_resource(vk::ImageAspectFlags image_a
 {
 	return vk::ImageSubresourceRange{ image_aspect_flags, 0, 1, 0, 1 };
 }
+
+struct GeometryDefinition
+{
+	std::vector<glm::vec3> vertices;
+	std::vector<glm::vec3> normals;
+	std::vector<uint32_t> indices;
+};
+
+GeometryDefinition build_rect(float width = 1.0f, float height = 1.0f, const glm::vec3& center = { 0.0f, 0.0f, 0.0f })
+{
+	std::vector<glm::vec3> vertices =
+	{
+		{ -width, -height, 0.0f },
+		{  width, -height, 0.0f },
+		{  width,  height, 0.0f },
+		{ -width,  height, 0.0f }
+	};
+
+	for (auto& v : vertices)
+	{
+		v += center;
+	}
+
+	std::vector<glm::vec3> normals;
+	normals.resize(vertices.size(), { 0.0f, 0.0f, 1.0f });
+
+	std::vector<uint32_t> indices =
+	{
+		0, 1, 2, // First triangle
+		0, 3, 2  // Second triangle
+	};
+
+	return GeometryDefinition{ vertices, normals, indices };
+}
+
+GeometryDefinition build_icosphere(float radius = 1.0f, const glm::vec3& center = { 0.0f, 0.0f, 0.0f })
+{
+	// See: http://blog.andreaskahler.com/2009/06/creating-icosphere-mesh-in-code.html
+	const float t = (1.0f + sqrtf(5.0f)) / 2.0f;
+
+	std::vector<glm::vec3> vertices =
+	{
+		{ -1.0f,  t,     0.0f },
+		{  1.0f,  t,     0.0f },
+		{ -1.0f, -t,     0.0f },
+		{  1.0f, -t,     0.0f },
+		{  0.0f, -1.0f,  t },
+		{  0.0f,  1.0f,  t },
+		{  0.0f, -1.0f, -t },
+		{  0.0f,  1.0f, -t },
+		{  t,     0.0f, -1.0f },
+		{  t,     0.0f,  1.0f },
+		{ -t,     0.0f, -1.0f },
+		{ -t,     0.0f,  1.0f }
+	};
+
+	for (auto &v : vertices)
+	{
+		v = glm::normalize(v) * radius + center;
+	}
+
+	size_t vertex_index = 0;
+	std::vector<glm::vec3> normals;
+	normals.resize(vertices.size());
+
+	std::generate(normals.begin(), normals.end(), [&] { return glm::normalize(vertices[vertex_index]); });
+
+	std::vector<uint32_t> indices =
+	{
+		0,  11, 5,
+		0,  5,  1,
+		0,  1,  7,
+		0,  7,  10,
+		0,  10, 11,
+		1,  5,  9,
+		5,  11, 4,
+		11, 10, 2,
+		10, 7,  6,
+		7,  1,  8,
+		3,  9,  4,
+		3,  4,  2,
+		3,  2,  6,
+		3,  6,  8,
+		3,  8,  9,
+		4,  9,  5,
+		2,  4,  11,
+		6,  2,  10,
+		8,  6,  7,
+		9,  8,  1
+	};
+
+	return GeometryDefinition{ vertices, normals, indices };
+}
+
