@@ -302,7 +302,7 @@ public:
 	}
 	
 	template<class T>
-	void upload(const Buffer& buffer, const std::vector<T>& data)
+	void upload(const Buffer& buffer, const std::vector<T>& data, vk::DeviceSize offset = 0)
 	{
 		size_t upload_size = sizeof(T) * data.size();
 
