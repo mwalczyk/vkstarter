@@ -5,6 +5,7 @@
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <sstream>
 
 #define NOMINMAX
@@ -23,6 +24,25 @@
 #else
 #define LOG_DEBUG(x) 
 #endif
+
+static vk::PhysicalDevice physical_device;
+static vk::Device device;
+static vk::Queue queue;
+static vk::DispatchLoaderDynamic dispatch_loader;
+static vk::CommandPool command_pool;
+
+void initialize_utilities(vk::PhysicalDevice s_physical_device, 
+	vk::Device s_device, 
+	vk::Queue s_queue,
+	vk::DispatchLoaderDynamic s_dispatch_loader,
+	vk::CommandPool s_command_pool)
+{
+	physical_device = s_physical_device;
+	device = s_device;
+	queue = s_queue;
+	dispatch_loader = s_dispatch_loader;
+	command_pool = s_command_pool;
+}
 
 struct alignas(8) PushConstants
 {
@@ -55,20 +75,23 @@ struct SwapchainDetails
 
 struct Buffer
 {
-	vk::UniqueBuffer buffer;
+	vk::UniqueBuffer inner;
 	vk::UniqueDeviceMemory device_memory;
+
+	std::optional<vk::UniqueBufferView> view;
 };
 
 struct Image
 {
-	vk::UniqueImage image;
+	vk::UniqueImage inner;
 	vk::UniqueDeviceMemory device_memory;
-	vk::UniqueImageView image_view;
+	
+	std::optional<vk::UniqueImageView> view;
 };
 
 struct AccelerationStructure
 {
-	vk::UniqueHandle<vk::AccelerationStructureNVX, vk::DispatchLoaderDynamic> accel;
+	vk::UniqueHandle<vk::AccelerationStructureNVX, vk::DispatchLoaderDynamic> inner;
 	vk::UniqueDeviceMemory device_memory;
 	uint64_t handle;
 	vk::MemoryRequirements2KHR scratch_memory_requirements;
@@ -167,6 +190,103 @@ void image_barrier(vk::CommandBuffer command_buffer,
 vk::ImageSubresourceRange get_single_layer_resource(vk::ImageAspectFlags image_aspect_flags = vk::ImageAspectFlagBits::eColor)
 {
 	return vk::ImageSubresourceRange{ image_aspect_flags, 0, 1, 0, 1 };
+}
+
+uint32_t find_memory_type(const vk::MemoryRequirements& memory_requirements, vk::MemoryPropertyFlags memory_properties)
+{
+	// Query available memory types
+	auto physical_device_memory_properties = physical_device.getMemoryProperties();
+
+	// Find a suitable memory type for this buffer
+	for (uint32_t i = 0; i < physical_device_memory_properties.memoryTypeCount; i++)
+	{
+		if ((memory_requirements.memoryTypeBits & (1 << i)) &&
+			(physical_device_memory_properties.memoryTypes[i].propertyFlags & memory_properties) == memory_properties)
+		{
+			return i;
+		}
+	}
+
+	throw std::runtime_error("No suitable memory types found");
+}
+
+Buffer create_buffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags memory_properties)
+{
+	auto buffer_create_info = vk::BufferCreateInfo{ {}, size, usage };
+	auto buffer = device.createBufferUnique(buffer_create_info);
+
+	// Figure out memory requirements for this buffer
+	auto memory_requirements = device.getBufferMemoryRequirements(buffer.get());
+	uint32_t memory_type_index = find_memory_type(memory_requirements, memory_properties);
+
+	// Allocate memory from the heap corresponding to the specified memory type index
+	auto memory_allocate_info = vk::MemoryAllocateInfo{ memory_requirements.size, memory_type_index };
+	auto device_memory = device.allocateMemoryUnique(memory_allocate_info);
+
+	// Associate the newly allocated device memory with this buffer
+	device.bindBufferMemory(buffer.get(), device_memory.get(), 0);
+
+	// Finally, create a "standard" buffer view (for now)
+	//auto buffer_view_create_info = vk::BufferViewCreateInfo{ {}, buffer.get(), vk::Format::eR32G32B32Sfloat, 0, size };
+	//auto buffer_view = device->createBufferViewUnique(buffer_view_create_info);
+
+	return Buffer{ std::move(buffer), std::move(device_memory), {} };
+}
+
+template<class T>
+void upload(const Buffer& buffer, const std::vector<T>& data, vk::DeviceSize offset = 0)
+{
+	size_t upload_size = sizeof(T) * data.size();
+
+	void* ptr = device.mapMemory(buffer.device_memory.get(), 0, upload_size);
+	memcpy(ptr, data.data(), upload_size);
+	device.unmapMemory(buffer.device_memory.get());
+}
+
+AccelerationStructure build_accel(vk::AccelerationStructureTypeNVX type, vk::ArrayProxy<const vk::GeometryNVX> geometries, uint32_t instance_count)
+{
+	// First, create the acceleration structure
+	auto accel_create_info = vk::AccelerationStructureCreateInfoNVX{}
+		.setType(type)
+		.setGeometryCount(geometries.size())
+		.setPGeometries(geometries.data())
+		.setInstanceCount(instance_count);
+
+	auto accel = device.createAccelerationStructureNVXUnique(accel_create_info, nullptr, dispatch_loader);
+
+	// Then, get the memory requirements for the newly created acceleration structure
+	auto accel_memory_requirements_info = vk::AccelerationStructureMemoryRequirementsInfoNVX{ accel.get() };
+	auto accel_memory_requirements = device.getAccelerationStructureMemoryRequirementsNVX(accel_memory_requirements_info, dispatch_loader);
+
+	// Allocate memory for this acceleration structure, which will reside in device local memory
+	uint32_t memory_type_index = find_memory_type(accel_memory_requirements.memoryRequirements, vk::MemoryPropertyFlagBits::eDeviceLocal);
+	auto memory_allocate_info = vk::MemoryAllocateInfo{ accel_memory_requirements.memoryRequirements.size, memory_type_index };
+	auto device_memory = device.allocateMemoryUnique(memory_allocate_info);
+
+	// Bind the device memory to the acceleration structure
+	auto bind_as_memory_info = vk::BindAccelerationStructureMemoryInfoNVX{ accel.get(), device_memory.get() };
+	device.bindAccelerationStructureMemoryNVX(bind_as_memory_info, dispatch_loader);
+
+	// Get a handle to the acceleration structure
+	uint64_t handle;
+	device.getAccelerationStructureHandleNVX(accel.get(), sizeof(uint64_t), &handle, dispatch_loader);
+
+	// Get scratch memory requirements for this acceleration structure (useful later)
+	auto scratch_memory_requirements = device.getAccelerationStructureScratchMemoryRequirementsNVX(accel_memory_requirements_info, dispatch_loader);
+
+	return AccelerationStructure{ std::move(accel), std::move(device_memory), handle, scratch_memory_requirements, type };
+}
+
+void single_time_commands(std::function<void(vk::CommandBuffer)> func)
+{
+	auto command_buffer = std::move(device.allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo{ command_pool, vk::CommandBufferLevel::ePrimary, 1 })[0]);
+	
+	command_buffer->begin({ vk::CommandBufferUsageFlagBits::eOneTimeSubmit });
+	func(command_buffer.get());
+	command_buffer->end();
+
+	queue.submit(vk::SubmitInfo{ 0, nullptr, nullptr, 1, &command_buffer.get() }, {});
+	queue.waitIdle();
 }
 
 struct GeometryDefinition

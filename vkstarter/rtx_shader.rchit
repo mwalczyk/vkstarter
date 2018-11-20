@@ -14,12 +14,12 @@ layout(push_constant) uniform PushConstants
 
 void main() 
 {
-	int prim = gl_PrimitiveID;
-    int inst = gl_InstanceID;
-	//int custom_inst = gl_InstanceCustomIndexNV;
+	int prim = gl_PrimitiveID; // The index of the triangle being processed
+    int inst = gl_InstanceID; // The index of the instance that intersects the current ray
+	
 
 	float modulate = sin(push_constants.time) * 0.5 + 0.5;
 
     const vec3 barycentrics = vec3(1.0f - hit_attribute.x - hit_attribute.y, hit_attribute.x, hit_attribute.y);
-    result_color = vec3(barycentrics * modulate);
+    result_color = vec3(barycentrics);// * modulate);
 }

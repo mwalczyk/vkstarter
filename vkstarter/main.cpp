@@ -1,4 +1,4 @@
-#include "utilities.h"
+#include "scene.h"
 
 #define RAYTRACING
 
@@ -55,10 +55,10 @@ public:
 		pipeline.reset();
 
 #if defined(RAYTRACING)
-		offscreen_image.image.reset();
-		offscreen_image.image_view.reset();
+		offscreen_image.inner.reset();
+		offscreen_image.view.reset();
 		offscreen_image.device_memory.reset();
-		shader_binding_table_buffer.buffer.reset();
+		shader_binding_table_buffer.inner.reset();
 		shader_binding_table_buffer.device_memory.reset();
 #endif
 
@@ -84,11 +84,11 @@ public:
 		initialize_surface();
 		initialize_swapchain();
 		initialize_render_pass();
+		initialize_command_pool();
 		initialize_geometry_buffers();
 		initialize_descriptor_set_layout();
 		initialize_pipeline();
 		initialize_framebuffers();
-		initialize_command_pool();
 		initialize_command_buffers();
 		initialize_synchronization_primitives();
 #if defined(RAYTRACING)
@@ -264,53 +264,6 @@ public:
 		render_pass = device->createRenderPassUnique(render_pass_create_info);
 	}
 
-	uint32_t find_memory_type(const vk::MemoryRequirements& memory_requirements, vk::MemoryPropertyFlags memory_properties)
-	{
-		// Query available memory types
-		auto physical_device_memory_properties = physical_device.getMemoryProperties();
-
-		// Find a suitable memory type for this buffer
-		for (uint32_t i = 0; i < physical_device_memory_properties.memoryTypeCount; i++)
-		{
-			if ((memory_requirements.memoryTypeBits & (1 << i)) &&
-				(physical_device_memory_properties.memoryTypes[i].propertyFlags & memory_properties) == memory_properties)
-			{
-				return i;
-			}
-		}
-
-		throw std::runtime_error("No suitable memory types found");
-	}
-
-	Buffer create_buffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags memory_properties)
-	{
-		auto buffer_create_info = vk::BufferCreateInfo{ {}, size, usage };
-		auto buffer = device->createBufferUnique(buffer_create_info);
-
-		// Figure out memory requirements for this buffer
-		auto memory_requirements = device->getBufferMemoryRequirements(buffer.get());
-		uint32_t memory_type_index = find_memory_type(memory_requirements, memory_properties);
-
-		// Allocate memory from the heap corresponding to the specified memory type index
-		auto memory_allocate_info = vk::MemoryAllocateInfo{ memory_requirements.size, memory_type_index };
-		auto device_memory = device->allocateMemoryUnique(memory_allocate_info);
-
-		// Associate the newly allocated device memory with this buffer
-		device->bindBufferMemory(buffer.get(), device_memory.get(), 0);
-
-		return Buffer{ std::move(buffer), std::move(device_memory) };
-	}
-	
-	template<class T>
-	void upload(const Buffer& buffer, const std::vector<T>& data, vk::DeviceSize offset = 0)
-	{
-		size_t upload_size = sizeof(T) * data.size();
-
-		void* ptr = device->mapMemory(buffer.device_memory.get(), 0, upload_size);
-		memcpy(ptr, data.data(), upload_size);
-		device->unmapMemory(buffer.device_memory.get());
-	}
-
 	void initialize_geometry_buffers()
 	{
 		// Describe how the memory associated with these buffers will be accessed
@@ -483,6 +436,9 @@ public:
 	{
 		command_pool = device->createCommandPoolUnique(vk::CommandPoolCreateInfo{ vk::CommandPoolCreateFlagBits::eResetCommandBuffer, queue_family_index });
 		LOG_DEBUG("Successfully created command pool");
+
+		// Save Vulkan handles into static variables in utilities header
+		initialize_utilities(physical_device, device.get(), queue, dispatch_loader, command_pool.get());
 	}
 
 	void initialize_command_buffers()
@@ -551,131 +507,98 @@ public:
 		LOG_DEBUG("Successfully created shader binding table");
 	}
 
-	AccelerationStructure build_accel(vk::AccelerationStructureTypeNVX type, vk::ArrayProxy<const vk::GeometryNVX> geometries, uint32_t instance_count)
-	{
-		// First, create the acceleration structure
-		auto accel_create_info = vk::AccelerationStructureCreateInfoNVX{}
-			.setType(type)
-			.setGeometryCount(geometries.size())
-			.setPGeometries(geometries.data())
-			.setInstanceCount(instance_count);
-
-		auto accel = device->createAccelerationStructureNVXUnique(accel_create_info, nullptr, dispatch_loader);
-
-		// Then, get the memory requirements for the newly created acceleration structure
-		auto accel_memory_requirements_info = vk::AccelerationStructureMemoryRequirementsInfoNVX{ accel.get() };
-		auto accel_memory_requirements = device->getAccelerationStructureMemoryRequirementsNVX(accel_memory_requirements_info, dispatch_loader);
-
-		// Allocate memory for this acceleration structure, which will reside in device local memory
-		uint32_t memory_type_index = find_memory_type(accel_memory_requirements.memoryRequirements, vk::MemoryPropertyFlagBits::eDeviceLocal);
-		auto memory_allocate_info = vk::MemoryAllocateInfo{ accel_memory_requirements.memoryRequirements.size, memory_type_index };
-		auto device_memory = device->allocateMemoryUnique(memory_allocate_info);
-
-		// Bind the device memory to the acceleration structure
-		auto bind_as_memory_info = vk::BindAccelerationStructureMemoryInfoNVX{ accel.get(), device_memory.get() };
-		device->bindAccelerationStructureMemoryNVX(bind_as_memory_info, dispatch_loader);
-
-		// Get a handle to the acceleration structure
-		uint64_t handle;
-		device->getAccelerationStructureHandleNVX(accel.get(), sizeof(uint64_t), &handle, dispatch_loader);
-
-		// Get scratch memory requirements for this acceleration structure (useful later)
-		auto scratch_memory_requirements = device->getAccelerationStructureScratchMemoryRequirementsNVX(accel_memory_requirements_info, dispatch_loader);
-
-		return AccelerationStructure{ std::move(accel), std::move(device_memory), handle, scratch_memory_requirements, type };
-	}
-
 	void initialize_scene()
 	{
-		auto geometry_triangles = vk::GeometryTrianglesNVX{}
-			.setIndexCount(static_cast<uint32_t>(geometry_def.indices.size()))
-			.setIndexData(index_buffer.buffer.get())
-			.setIndexType(vk::IndexType::eUint32)
-			.setVertexCount(static_cast<uint32_t>(geometry_def.vertices.size()))
-			.setVertexData(vertex_buffer.buffer.get())
-			.setVertexFormat(vk::Format::eR32G32B32Sfloat)
-			.setVertexStride(sizeof(geometry_def.vertices[0]));
 
-		auto geometry_data = vk::GeometryDataNVX{ geometry_triangles };
-		auto geometry = vk::GeometryNVX{ vk::GeometryTypeNVX::eTriangles, geometry_data, vk::GeometryFlagBitsNVX::eOpaque };
+		//auto geometry_triangles = vk::GeometryTrianglesNVX{}
+		//	.setIndexCount(static_cast<uint32_t>(geometry_def.indices.size()))
+		//	.setIndexData(index_buffer.inner.get())
+		//	.setIndexType(vk::IndexType::eUint32)
+		//	.setVertexCount(static_cast<uint32_t>(geometry_def.vertices.size()))
+		//	.setVertexData(vertex_buffer.inner.get())
+		//	.setVertexFormat(vk::Format::eR32G32B32Sfloat)
+		//	.setVertexStride(sizeof(geometry_def.vertices[0]));
 
-		// Create the bottom and top-level acceleration structures for our scene
-		b_level = build_accel(vk::AccelerationStructureTypeNVX::eBottomLevel, geometry, 0);
-		t_level = build_accel(vk::AccelerationStructureTypeNVX::eTopLevel, {}, 1); // 1 instance
+		//auto geometry_data = vk::GeometryDataNVX{ geometry_triangles };
+		//auto geometry = vk::GeometryNVX{ vk::GeometryTypeNVX::eTriangles, geometry_data, vk::GeometryFlagBitsNVX::eOpaque };
 
-		// Create a buffer to hold instance data
-		{
-			// Not implemented in vulkan.hpp or vulkan.h?
-			VkGeometryInstance instance;
-			std::memcpy(instance.transform, transform.data(), sizeof(transform[0]) * transform.size());
-			instance.instanceId = 0;
-			instance.mask = 0xff;
-			instance.instanceOffset = 0;
-			instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_CULL_DISABLE_BIT_NVX;
-			instance.accelerationStructureHandle = b_level.handle;
+		//// Create the bottom and top-level acceleration structures for our scene
+		//b_level = build_accel(vk::AccelerationStructureTypeNVX::eBottomLevel, geometry, 0);
+		//t_level = build_accel(vk::AccelerationStructureTypeNVX::eTopLevel, {}, 1); // 1 instance
 
-			const std::vector<VkGeometryInstance> instances = { instance };
+		//// Create a buffer to hold instance data
+		//{
+		//	// Not implemented in vulkan.hpp or vulkan.h?
+		//	VkGeometryInstance instance;
+		//	std::memcpy(instance.transform, transform.data(), sizeof(transform[0]) * transform.size());
+		//	instance.instanceId = 0;
+		//	instance.mask = 0xff;
+		//	instance.instanceOffset = 0;
+		//	instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_CULL_DISABLE_BIT_NVX;
+		//	instance.accelerationStructureHandle = b_level.handle;
 
-			instance_buffer = create_buffer(sizeof(instance), vk::BufferUsageFlagBits::eRaytracingNVX, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-			upload(instance_buffer, instances);
-		}
+		//	const std::vector<VkGeometryInstance> instances = { instance };
 
-		// Create a buffer for scratch memory, then build the acceleration structures
-		{
-			const vk::DeviceSize scratch_buffer_size = std::max(b_level.scratch_memory_requirements.memoryRequirements.size, t_level.scratch_memory_requirements.memoryRequirements.size);
+		//	instance_buffer = create_buffer(sizeof(instance), vk::BufferUsageFlagBits::eRaytracingNVX, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+		//	upload(instance_buffer, instances);
+		//}
 
-			scratch_buffer = create_buffer(scratch_buffer_size, vk::BufferUsageFlagBits::eRaytracingNVX, vk::MemoryPropertyFlagBits::eDeviceLocal);
-		}
-		LOG_DEBUG("Allocated acceleration structures");
+		//// Create a buffer for scratch memory, then build the acceleration structures
+		//{
+		//	const vk::DeviceSize scratch_buffer_size = std::max(b_level.scratch_memory_requirements.memoryRequirements.size, t_level.scratch_memory_requirements.memoryRequirements.size);
 
-		// Record and submit a command buffer that will build the acceleration structures
-		{
-			auto command_buffer = std::move(device->allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo{ command_pool.get(), vk::CommandBufferLevel::ePrimary, 1 })[0]);
-			command_buffer->begin({ vk::CommandBufferUsageFlagBits::eOneTimeSubmit });
+		//	scratch_buffer = create_buffer(scratch_buffer_size, vk::BufferUsageFlagBits::eRaytracingNVX, vk::MemoryPropertyFlagBits::eDeviceLocal);
+		//}
+		//LOG_DEBUG("Allocated acceleration structures");
 
-			auto memory_barrier = vk::MemoryBarrier{ vk::AccessFlagBits::eAccelerationStructureWriteNVX | vk::AccessFlagBits::eAccelerationStructureReadNVX,
-													 vk::AccessFlagBits::eAccelerationStructureWriteNVX | vk::AccessFlagBits::eAccelerationStructureReadNVX };
+		//// Record and submit a command buffer that will build the acceleration structures
+		//{
+		//	auto command_buffer = std::move(device->allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo{ command_pool.get(), vk::CommandBufferLevel::ePrimary, 1 })[0]);
+		//	command_buffer->begin({ vk::CommandBufferUsageFlagBits::eOneTimeSubmit });
 
-			// Build bottom-level acceleration structure
-			command_buffer->buildAccelerationStructureNVX(
-				b_level.type,
-				0,
-				{},
-				0,
-				geometry,
-				{},
-				false,
-				b_level.accel.get(),
-				{},
-				scratch_buffer.buffer.get(),
-				0,
-				dispatch_loader);
+		//	auto memory_barrier = vk::MemoryBarrier{ vk::AccessFlagBits::eAccelerationStructureWriteNVX | vk::AccessFlagBits::eAccelerationStructureReadNVX,
+		//											 vk::AccessFlagBits::eAccelerationStructureWriteNVX | vk::AccessFlagBits::eAccelerationStructureReadNVX };
 
-			command_buffer->pipelineBarrier(vk::PipelineStageFlagBits::eRaytracingNVX, vk::PipelineStageFlagBits::eRaytracingNVX, {}, memory_barrier, {}, {});
+		//	// Build bottom-level acceleration structure
+		//	command_buffer->buildAccelerationStructureNVX(
+		//		b_level.type,
+		//		0,
+		//		{},
+		//		0,
+		//		geometry,
+		//		{},
+		//		false,
+		//		b_level.inner.get(),
+		//		{},
+		//		scratch_buffer.inner.get(),
+		//		0,
+		//		dispatch_loader);
 
-			// Build top-level acceleration structure
-			command_buffer->buildAccelerationStructureNVX(
-				t_level.type,
-				1,
-				instance_buffer.buffer.get(),
-				0,
-				{},
-				{},
-				false,
-				t_level.accel.get(),
-				{},
-				scratch_buffer.buffer.get(),
-				0,
-				dispatch_loader);
+		//	command_buffer->pipelineBarrier(vk::PipelineStageFlagBits::eRaytracingNVX, vk::PipelineStageFlagBits::eRaytracingNVX, {}, memory_barrier, {}, {});
 
-			command_buffer->pipelineBarrier(vk::PipelineStageFlagBits::eRaytracingNVX, vk::PipelineStageFlagBits::eRaytracingNVX, {}, memory_barrier, {}, {});
+		//	// Build top-level acceleration structure
+		//	command_buffer->buildAccelerationStructureNVX(
+		//		t_level.type,
+		//		1,
+		//		instance_buffer.inner.get(),
+		//		0,
+		//		{},
+		//		{},
+		//		false,
+		//		t_level.inner.get(),
+		//		{},
+		//		scratch_buffer.inner.get(),
+		//		0,
+		//		dispatch_loader);
 
-			// Submit and wait
-			command_buffer->end();
-			queue.submit(vk::SubmitInfo{ 0, nullptr, nullptr, 1, &command_buffer.get() }, {});
-			queue.waitIdle();
-		}
-		LOG_DEBUG("Built bottom and top-level acceleration structures");
+		//	command_buffer->pipelineBarrier(vk::PipelineStageFlagBits::eRaytracingNVX, vk::PipelineStageFlagBits::eRaytracingNVX, {}, memory_barrier, {}, {});
+
+		//	// Submit and wait
+		//	command_buffer->end();
+		//	queue.submit(vk::SubmitInfo{ 0, nullptr, nullptr, 1, &command_buffer.get() }, {});
+		//	queue.waitIdle();
+		//}
+		//LOG_DEBUG("Built bottom and top-level acceleration structures");
 	}
 #endif
 	void initialize_descriptor_set()
@@ -707,12 +630,12 @@ public:
 		// - Type
 
 		// Descriptor #0: top-level acceleration structure
-		auto descriptor_accel_info = vk::DescriptorAccelerationStructureInfoNVX{ 1, &t_level.accel.get() };
+		auto descriptor_accel_info = vk::DescriptorAccelerationStructureInfoNVX{ 1, &t_level.inner.get() };
 		auto write_descriptor_0 = vk::WriteDescriptorSet{ descriptor_set.get(), 0, 0, 1, vk::DescriptorType::eAccelerationStructureNVX };
 		write_descriptor_0.setPNext(&descriptor_accel_info); // Notice that we write to pNext here!
 
 		// Descriptor #1: offscreen storage image
-		auto descriptor_image_info = vk::DescriptorImageInfo{ {}, offscreen_image.image_view.get(), vk::ImageLayout::eGeneral };
+		auto descriptor_image_info = vk::DescriptorImageInfo{ {}, offscreen_image.view.value().get(), vk::ImageLayout::eGeneral };
 		auto write_descriptor_1 = vk::WriteDescriptorSet{ descriptor_set.get(), 1, 0, 1, vk::DescriptorType::eStorageImage };
 		write_descriptor_1.setPImageInfo(&descriptor_image_info);
 
@@ -737,7 +660,7 @@ public:
 		command_buffers[index]->begin(vk::CommandBufferBeginInfo{ vk::CommandBufferUsageFlagBits::eSimultaneousUse });
 #if defined(RAYTRACING)
 		image_barrier(command_buffers[index].get(),
-					  offscreen_image.image.get(),
+					  offscreen_image.inner.get(),
 					  subresource,
 					  {},
 					  vk::AccessFlagBits::eShaderWrite,
@@ -747,9 +670,9 @@ public:
 		command_buffers[index]->bindPipeline(vk::PipelineBindPoint::eRaytracingNVX, pipeline.get());
 		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eClosestHitNVX, 0, sizeof(PushConstants), &push_constants);
 		command_buffers[index]->bindDescriptorSets(vk::PipelineBindPoint::eRaytracingNVX, pipeline_layout.get(), 0, descriptor_set.get(), {});
-		command_buffers[index]->traceRaysNVX(shader_binding_table_buffer.buffer.get(), 0,
-											 shader_binding_table_buffer.buffer.get(), 2 * raytracing_properties.shaderHeaderSize, raytracing_properties.shaderHeaderSize,
-											 shader_binding_table_buffer.buffer.get(), 1 * raytracing_properties.shaderHeaderSize, raytracing_properties.shaderHeaderSize,
+		command_buffers[index]->traceRaysNVX(shader_binding_table_buffer.inner.get(), 0,
+											 shader_binding_table_buffer.inner.get(), 2 * raytracing_properties.shaderHeaderSize, raytracing_properties.shaderHeaderSize,
+											 shader_binding_table_buffer.inner.get(), 1 * raytracing_properties.shaderHeaderSize, raytracing_properties.shaderHeaderSize,
 											 window_details.width, window_details.height, dispatch_loader);
 
 		image_barrier(command_buffers[index].get(),
@@ -761,7 +684,7 @@ public:
 					  vk::ImageLayout::eTransferDstOptimal);
 
 		image_barrier(command_buffers[index].get(),
-					  offscreen_image.image.get(),
+					  offscreen_image.inner.get(),
 					  subresource,
 					  vk::AccessFlagBits::eShaderWrite,
 					  vk::AccessFlagBits::eTransferRead,
@@ -775,7 +698,7 @@ public:
 			.setDstSubresource(full_layer)
 			.setExtent({ window_details.width, window_details.height, 1 });
 
-		command_buffers[index]->copyImage(offscreen_image.image.get(),
+		command_buffers[index]->copyImage(offscreen_image.inner.get(),
 										  vk::ImageLayout::eTransferSrcOptimal,
 										  swapchain_images[index],
 										  vk::ImageLayout::eTransferDstOptimal,
@@ -795,8 +718,8 @@ public:
 
 		command_buffers[index]->beginRenderPass(vk::RenderPassBeginInfo{ render_pass.get(), framebuffers[index].get(), render_area, 1, &clear }, vk::SubpassContents::eInline);
 		command_buffers[index]->bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.get());
-		command_buffers[index]->bindVertexBuffers(0, vertex_buffer.buffer.get(), vk::DeviceSize{ 0 });
-		command_buffers[index]->bindIndexBuffer(index_buffer.buffer.get(), 0, vk::IndexType::eUint32);
+		command_buffers[index]->bindVertexBuffers(0, vertex_buffer.inner.get(), vk::DeviceSize{ 0 });
+		command_buffers[index]->bindIndexBuffer(index_buffer.inner.get(), 0, vk::IndexType::eUint32);
 		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eFragment, 0, sizeof(PushConstants), &push_constants);
 		command_buffers[index]->drawIndexed(static_cast<uint32_t>(geometry_def.indices.size()), 1, 0, 0, 0);
 		command_buffers[index]->endRenderPass();
@@ -874,6 +797,7 @@ private:
 
 	AccelerationStructure b_level;
 	AccelerationStructure t_level;
+	Scene scene;
 #else
 	// The additional dispatch loader template parameter is not needed for a graphics pipeline
 	vk::UniquePipeline pipeline;

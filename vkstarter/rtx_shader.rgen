@@ -12,6 +12,7 @@ layout(location = 0) rayPayloadNVX vec3 result_color;
 
 void main() 
 {
+    // Generate UV-coordinates in the range [-1..1]
     vec2 uv = vec2(gl_LaunchIDNVX.xy) / vec2(gl_LaunchSizeNVX.xy - 1);
     uv = uv * 2.0 - 1.0;
 
@@ -20,8 +21,12 @@ void main()
 
     const uint ray_flags = gl_RayFlagsNoneNVX;
     const uint cull_mask = 0xFF;
-    const uint sbt_record_offset = 0;
-    const uint sbt_record_stride = 0;
+    
+    // Index and size of the intersection group in our SBT
+    const uint shader_binding_table_record_offset = 0;
+    const uint shader_binding_table_record_stride = 0;
+
+    // Index of miss shader group
     const uint miss_index = 0;
     const float tmin = 0.0f;
     const float tmax = 10.0f;
@@ -30,8 +35,8 @@ void main()
     traceNVX(acceleration_structure,
              ray_flags,
              cull_mask,
-             sbt_record_offset,
-             sbt_record_stride,
+             shader_binding_table_record_offset,
+             shader_binding_table_record_stride,
              miss_index,
              origin,
              tmin,
