@@ -14,6 +14,7 @@
 #include "glfw3native.h"
 
 #include "glm.hpp"
+#include "gtc/type_ptr.hpp"
 
 #define VK_USE_PLATFORM_WIN32_KHR
 #include "vulkan/vulkan.hpp"
@@ -238,7 +239,7 @@ void upload(const Buffer& buffer, const std::vector<T>& data, vk::DeviceSize off
 {
 	size_t upload_size = sizeof(T) * data.size();
 
-	void* ptr = device.mapMemory(buffer.device_memory.get(), 0, upload_size);
+	void* ptr = device.mapMemory(buffer.device_memory.get(), offset, VK_WHOLE_SIZE);
 	memcpy(ptr, data.data(), upload_size);
 	device.unmapMemory(buffer.device_memory.get());
 }
@@ -382,3 +383,22 @@ GeometryDefinition build_icosphere(float radius = 1.0f, const glm::vec3& center 
 	return GeometryDefinition{ vertices, normals, indices };
 }
 
+glm::mat4x3 get_identity_matrix()
+{
+	// GLM is column-major by default, so we need to construct our own
+	// identity matrix here
+	return glm::mat4x3{
+		1.0f, 0.0f, 0.0f, 0.0f,
+		0.0f, 1.0f, 0.0f, 0.0f,
+		0.0f, 0.0f, 1.0f, 0.0f
+	};
+}
+
+glm::mat4x3 get_translation_matrix(const glm::vec3& translate)
+{
+	return glm::mat4x3{
+		1.0f, 0.0f, 0.0f, translate.x,
+		0.0f, 1.0f, 0.0f, translate.y,
+		0.0f, 0.0f, 1.0f, translate.z
+	};
+}
