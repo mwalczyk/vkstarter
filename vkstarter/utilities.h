@@ -295,16 +295,29 @@ struct GeometryDefinition
 	std::vector<glm::vec3> vertices;
 	std::vector<glm::vec3> normals;
 	std::vector<uint32_t> indices;
+
+	void transform(const glm::mat3& matrix)
+	{
+		for (auto& v : vertices)
+		{
+			v = matrix * v;
+		}
+
+		for (auto& n : normals)
+		{
+			n = matrix * n;
+		}
+	}
 };
 
 GeometryDefinition build_rect(float width = 1.0f, float height = 1.0f, const glm::vec3& center = { 0.0f, 0.0f, 0.0f })
 {
 	std::vector<glm::vec3> vertices =
 	{
-		{ -width, -height, 0.0f },
-		{  width, -height, 0.0f },
-		{  width,  height, 0.0f },
-		{ -width,  height, 0.0f }
+		{ -width, 0.0f, -height },
+		{  width, 0.0f, -height },
+		{  width, 0.0f,  height },
+		{ -width, 0.0f,  height }
 	};
 
 	for (auto& v : vertices)

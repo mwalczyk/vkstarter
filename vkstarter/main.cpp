@@ -280,7 +280,7 @@ public:
 			.setOffset(0)
 			.setSize(sizeof(PushConstants))
 #if defined(RAYTRACING)
-			.setStageFlags(vk::ShaderStageFlagBits::eClosestHitNVX);
+			.setStageFlags(vk::ShaderStageFlagBits::eRaygenNVX | vk::ShaderStageFlagBits::eClosestHitNVX);
 #else
 			.setStageFlags(vk::ShaderStageFlagBits::eFragment);
 #endif
@@ -485,11 +485,11 @@ public:
 	{
 		scene.initialize();
 
-		GeometryDefinition geom_0 = build_icosphere(0.5f, { 0.0f, 0.0f, 3.0f });
-
-		scene.add_geometry(geom_0, get_translation_matrix(glm::vec3{ 1.0f, 0.0f, 0.0f }));
-		scene.add_geometry(geom_0, get_translation_matrix(glm::vec3{ -1.0f, 0.0f, 0.0f }));
-		int x = 0;
+		GeometryDefinition geom_0 = build_icosphere(1.0f);
+		GeometryDefinition geom_1 = build_rect(2.0f, 2.0f, { 0.0f, 1.0f, 0.0f });
+		
+		scene.add_geometry(geom_0);
+		scene.add_geometry(geom_1);
 	}
 
 	void initialize_descriptor_set()
@@ -559,7 +559,7 @@ public:
 					  vk::ImageLayout::eGeneral);
 
 		command_buffers[index]->bindPipeline(vk::PipelineBindPoint::eRaytracingNVX, pipeline.get());
-		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eClosestHitNVX, 0, sizeof(PushConstants), &push_constants);
+		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eRaygenNVX | vk::ShaderStageFlagBits::eClosestHitNVX, 0, sizeof(PushConstants), &push_constants);
 		command_buffers[index]->bindDescriptorSets(vk::PipelineBindPoint::eRaytracingNVX, pipeline_layout.get(), 0, descriptor_set.get(), {});
 		command_buffers[index]->traceRaysNVX(shader_binding_table_buffer.inner.get(), 0,
 											 shader_binding_table_buffer.inner.get(), 2 * raytracing_properties.shaderHeaderSize, raytracing_properties.shaderHeaderSize,

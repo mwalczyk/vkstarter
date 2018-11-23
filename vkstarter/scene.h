@@ -22,11 +22,11 @@ public:
 	void add_geometry(const GeometryDefinition& geometry_def, const glm::mat4x3& transform = get_identity_matrix())
 	{
 		// Describe how the memory associated with these buffers will be accessed
-		auto memory_properties = vk::MemoryPropertyFlagBits::eHostCoherent | vk::MemoryPropertyFlagBits::eHostVisible;
+		const auto memory_properties = vk::MemoryPropertyFlagBits::eHostCoherent | vk::MemoryPropertyFlagBits::eHostVisible;
 
 		// Describe the intended usage of these buffers
-		auto vertex_buffer_usage = vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eRaytracingNVX;
-		auto index_buffer_usage = vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eRaytracingNVX;
+		const auto vertex_buffer_usage = vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eRaytracingNVX;
+		const auto index_buffer_usage = vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eRaytracingNVX;
 
 		// Create the buffers (and device memory)
 		Buffer vertex_buffer = create_buffer(sizeof(geometry_def.vertices[0]) * geometry_def.vertices.size(), vertex_buffer_usage, memory_properties);
@@ -40,7 +40,7 @@ public:
 		// Push back vertex buffers
 		vertex_buffers.push_back(std::move(vertex_buffer));
 		index_buffers.push_back(std::move(index_buffer));
-		// normals...
+		// TODO: normals...
 
 		// Then, build the geometry - because we move the buffers into a vector (above), 
 		// we need to be sure to reference the buffer handles from inside the vector
@@ -83,13 +83,14 @@ private:
 			const std::vector<VkGeometryInstance> instances = { instance };
 
 			// Upload the transform data to the GPU
-			size_t offset = sizeof(VkGeometryInstance) * instance_id;
+			const size_t offset = sizeof(VkGeometryInstance) * instance_id;
 			upload(instances_buffer, instances, offset);
 
-			// Keep track of the transform data on the CPU, as well
+			// Keep track of the transform data on the CPU, as it may change and need to be
+			// re-uploaded to the GPU
 			transforms.push_back(transform);
 
-			// Update the TLAS
+			// Update (or create) the TLAS
 			update_tlas();
 		}
 	}
@@ -97,11 +98,11 @@ private:
 	void update_tlas(bool update = false)
 	{
 		LOG_DEBUG("Building TLAS with " << transforms.size() << " instances");
-		top_level = build_accel(vk::AccelerationStructureTypeNVX::eTopLevel, {}, transforms.size());
+		top_level = build_accel(vk::AccelerationStructureTypeNVX::eTopLevel, {}, static_cast<uint32_t>(transforms.size()));
 
 		// Update scratch memory size (if necessary)
-		size_t potential_size = std::max(bottom_levels.back().scratch_memory_requirements.memoryRequirements.size,
-										 top_level.scratch_memory_requirements.memoryRequirements.size);
+		const size_t potential_size = std::max(bottom_levels.back().scratch_memory_requirements.memoryRequirements.size,
+										       top_level.scratch_memory_requirements.memoryRequirements.size);
 
 		if (potential_size > scratch_memory_size)
 		{
@@ -170,12 +171,17 @@ private:
 	std::vector<AccelerationStructure> bottom_levels;
 
 	static const size_t max_instances = 256;
-	size_t scratch_memory_size = 0; // Updated every time a new BLAS is added (max)
 
-	std::vector<glm::mat4> transforms; // CPU
+	// Updated every time a new BLAS is added (max)
+	size_t scratch_memory_size = 0; 
 
-	Buffer instances_buffer; // GPU
+	// CPU buffers
+	std::vector<glm::mat4> transforms; 
+
+	// GPU buffers
+	Buffer instances_buffer; 
 	Buffer scratch_buffer;
 
+	// The top-level acceleration structure (TLAS)
 	AccelerationStructure top_level;
 };
