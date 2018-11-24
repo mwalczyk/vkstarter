@@ -1,0 +1,125 @@
+#version 460
+#extension GL_NVX_raytracing : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "shared.glsl"
+
+layout(push_constant) uniform PushConstants 
+{
+    vec2 resolution;
+    vec2 cursor;
+    float time;
+} push_constants;
+
+layout(set = 0, binding = 0) uniform accelerationStructureNVX acceleration_structure;
+layout(set = 0, binding = 1, rgba8) uniform image2D result_image;
+
+layout(location = RAY_PAYLOAD_LOC_PRI) rayPayloadNVX RayPayloadPri payload_pri;
+layout(location = RAY_PAYLOAD_LOC_SEC) rayPayloadNVX RayPayloadSec payload_sec;
+
+// Notes about the coordinate system:
+//          - Y
+//            |
+//      -X ------ +X
+//            |
+//          + Y
+const vec3 camera_lookat = origin;
+const float fov = 45.0f;
+
+vec3 light_position = { sin(push_constants.time) * 2.0, -3.0, cos(push_constants.time) * 2.0 }; 
+
+#ifdef CURSOR_CONTROLS
+    float x = (push_constants.cursor.x * 2.0 - 1.0) * MOTION_RANGE;
+    float y = (push_constants.cursor.y * 2.0 - 1.0) * MOTION_RANGE;
+    vec3 camera_position = { x, y, -5.0f };
+#else
+    vec3 camera_position = { 0.0f, 0.0f, -5.0f };
+#endif
+
+
+vec3 find_ray_direction(in vec2 screen_uv, float aspect_ratio) 
+{
+    vec3 camera_forward = normalize(camera_lookat - camera_position); 
+    vec3 camera_right = cross(camera_forward, world_up);
+    vec3 camera_up = cross(camera_right, camera_forward);
+
+    vec3 u = camera_right;
+    vec3 v = camera_up;
+
+    const float plane_width = tan(fov * 0.5f);
+    u *= (plane_width * aspect_ratio);
+    v *= plane_width;
+
+    return normalize(camera_forward + (u * screen_uv.x) - (v * screen_uv.y));
+}
+
+void main() 
+{
+    // Generate UV-coordinates in the range [-1..1] 
+    vec2 uv = vec2(gl_LaunchIDNVX.xy) / vec2(gl_LaunchSizeNVX.xy - 1);
+    uv = uv * 2.0f - 1.0f;
+
+    const float aspect_ratio = push_constants.resolution.x / push_constants.resolution.y;
+    
+    vec3 ray_direction = find_ray_direction(uv, aspect_ratio); 
+    vec3 ray_origin = camera_position;
+
+    const uint shader_binding_table_record_stride = 0;
+
+    traceNVX(acceleration_structure,
+             gl_RayFlagsNoneNVX,    // ray flags
+             0xFF,                  // cull mask
+             HIT_SHADER_PRI,
+             shader_binding_table_record_stride,
+             MISS_SHADER_PRI,
+             ray_origin,
+             0.0f,                  // tmin
+             ray_direction,
+             10.0f,                 // tmax
+             RAY_PAYLOAD_LOC_PRI);
+
+    vec3 final_color = { 0.0f, 0.0f, 0.0f };
+
+    if (payload_pri.distance < 0.0f)
+    {
+        // No hit
+        final_color += payload_pri.color;
+    }
+    else
+    {
+        // Shoot secondary shadow ray
+        vec3 shadow_origin = ray_origin + ray_direction * payload_pri.distance;
+        shadow_origin += payload_pri.normal * 0.001f;
+
+        vec3 shadow_direction =  normalize(light_position);
+
+        traceNVX(acceleration_structure,
+                 gl_RayFlagsNoneNVX | gl_RayFlagsTerminateOnFirstHitNVX,    
+                 0xFF,                 
+                 HIT_SHADER_SEC,
+                 shader_binding_table_record_stride,
+                 MISS_SHADER_SEC,
+                 shadow_origin,
+                 0.0f,                  
+                 shadow_direction,
+                 10.0f,                 
+                 RAY_PAYLOAD_LOC_SEC);
+
+        const float ambient = 0.1f;
+        vec3 shaded_color = payload_pri.normal * 0.5f + 0.5f;
+        
+        if (payload_sec.distance > 0.0f)
+        {
+            // The shadow ray intersected geometry
+            final_color += shaded_color * ambient;
+        }
+        else
+        {
+            // The shadow ray didn't hit anything - this pixel is lit
+            final_color += shaded_color * max(ambient, dot(payload_pri.normal, normalize(light_position)));
+        }
+    }
+    
+
+    imageStore(result_image, ivec2(gl_LaunchIDNVX.xy), vec4(final_color, 1.0f));
+}

@@ -280,7 +280,7 @@ public:
 			.setOffset(0)
 			.setSize(sizeof(PushConstants))
 #if defined(RAYTRACING)
-			.setStageFlags(vk::ShaderStageFlagBits::eRaygenNVX | vk::ShaderStageFlagBits::eClosestHitNVX);
+			.setStageFlags(vk::ShaderStageFlagBits::eRaygenNVX);
 #else
 			.setStageFlags(vk::ShaderStageFlagBits::eFragment);
 #endif
@@ -303,21 +303,37 @@ public:
 		}
 
 		// Load the 3 shader modules that will be used to build the raytracing pipeline
-		auto rgen_module = load_spv_into_module(device, path_prefix + "rgen.spv");
-		auto chit_module = load_spv_into_module(device, path_prefix + "rchit.spv");
-		auto miss_module = load_spv_into_module(device, path_prefix + "rmiss.spv");
+		auto rgen_module = load_spv_into_module(device, path_prefix + "pri_rgen.spv");
+
+		auto pri_chit_module = load_spv_into_module(device, path_prefix + "pri_rchit.spv");
+		auto sec_chit_module = load_spv_into_module(device, path_prefix + "sec_rchit.spv");
+
+		auto pri_miss_module = load_spv_into_module(device, path_prefix + "pri_rmiss.spv");
+		auto sec_miss_module = load_spv_into_module(device, path_prefix + "sec_rmiss.spv");
 		LOG_DEBUG("Successfully loaded RTX shader modules");
 
 		// Gather shader stage create infos
 		auto rgen_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eRaygenNVX, rgen_module.get(), entry_point };
-		auto chit_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eClosestHitNVX, chit_module.get(), entry_point };
-		auto miss_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eMissNVX, miss_module.get(), entry_point };
-		const std::vector<vk::PipelineShaderStageCreateInfo> shader_stage_create_infos = { rgen_stage_create_info, chit_stage_create_info, miss_stage_create_info };
+		
+		auto pri_chit_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eClosestHitNVX, pri_chit_module.get(), entry_point };
+		auto sec_chit_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eClosestHitNVX, sec_chit_module.get(), entry_point };
+		
+		auto pri_miss_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eMissNVX, pri_miss_module.get(), entry_point };
+		auto sec_miss_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eMissNVX, sec_miss_module.get(), entry_point };
+
+		const std::vector<vk::PipelineShaderStageCreateInfo> shader_stage_create_infos = 
+		{ 
+			rgen_stage_create_info, 
+			pri_chit_stage_create_info, 
+			sec_chit_stage_create_info,
+			pri_miss_stage_create_info,
+			sec_miss_stage_create_info 
+		};
 
 		// Group 0: ray generation
-		// Group 1: closest hit
-		// Group 2: miss
-		const uint32_t group_numbers[] = { 0, 1, 2 };
+		// Group 1 and 2: closest hit
+		// Group 3 and 4: miss
+		const uint32_t group_numbers[] = { 0, 1, 2, 3, 4 };
 
 		// Build a ray tracing pipeline object
 		auto raytracing_pipeline_create_info = vk::RaytracingPipelineCreateInfoNVX{}
@@ -325,7 +341,7 @@ public:
 			.setPStages(shader_stage_create_infos.data())
 			.setPGroupNumbers(group_numbers)
 			.setLayout(pipeline_layout.get())
-			.setMaxRecursionDepth(1);
+			.setMaxRecursionDepth(10);
 
 		pipeline = device->createRaytracingPipelineNVXUnique({}, raytracing_pipeline_create_info, nullptr, dispatch_loader);
 		LOG_DEBUG("Successfully created raytracing pipeline");
@@ -469,7 +485,7 @@ public:
 
 	void initialize_shader_binding_table()
 	{
-		const uint32_t number_of_groups = 3;
+		const uint32_t number_of_groups = 5;
 		const uint32_t table_size = raytracing_properties.shaderHeaderSize * number_of_groups;
 
 		shader_binding_table_buffer = create_buffer(table_size, vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eRaytracingNVX, vk::MemoryPropertyFlagBits::eHostVisible);
@@ -485,8 +501,8 @@ public:
 	{
 		scene.initialize();
 
-		GeometryDefinition geom_0 = build_icosphere(1.0f);
-		GeometryDefinition geom_1 = build_rect(2.0f, 2.0f, { 0.0f, 1.0f, 0.0f });
+		GeometryDefinition geom_0 = build_sphere();
+		GeometryDefinition geom_1 = build_rect(4.0f, 4.0f, { 0.0f, 1.0f, 0.0f });
 		
 		scene.add_geometry(geom_0);
 		scene.add_geometry(geom_1);
@@ -538,12 +554,16 @@ public:
 
 	void record_command_buffer(uint32_t index)
 	{
+		double cursor_x, cursor_y;
+		glfwGetCursorPos(window_details.window, &cursor_x, &cursor_y);
+
 		PushConstants push_constants =
 		{
-			get_elapsed_time(),
-			0.0f,  /* Padding */
 			static_cast<float>(window_details.width),
-			static_cast<float>(window_details.height)
+			static_cast<float>(window_details.height),
+			static_cast<float>(cursor_x / window_details.width),
+			static_cast<float>(cursor_y / window_details.height),
+			get_elapsed_time()
 		};
 
 		const auto subresource = get_single_layer_resource();
@@ -559,11 +579,15 @@ public:
 					  vk::ImageLayout::eGeneral);
 
 		command_buffers[index]->bindPipeline(vk::PipelineBindPoint::eRaytracingNVX, pipeline.get());
-		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eRaygenNVX | vk::ShaderStageFlagBits::eClosestHitNVX, 0, sizeof(PushConstants), &push_constants);
+		command_buffers[index]->pushConstants(pipeline_layout.get(), vk::ShaderStageFlagBits::eRaygenNVX, 0, sizeof(PushConstants), &push_constants);
 		command_buffers[index]->bindDescriptorSets(vk::PipelineBindPoint::eRaytracingNVX, pipeline_layout.get(), 0, descriptor_set.get(), {});
 		command_buffers[index]->traceRaysNVX(shader_binding_table_buffer.inner.get(), 0,
-											 shader_binding_table_buffer.inner.get(), 2 * raytracing_properties.shaderHeaderSize, raytracing_properties.shaderHeaderSize,
-											 shader_binding_table_buffer.inner.get(), 1 * raytracing_properties.shaderHeaderSize, raytracing_properties.shaderHeaderSize,
+											 shader_binding_table_buffer.inner.get(), 
+											 raytracing_properties.shaderHeaderSize * 3, // 3 for ray generation group (1) and closest hit groups (2) 
+											 raytracing_properties.shaderHeaderSize,
+											 shader_binding_table_buffer.inner.get(), 
+											 raytracing_properties.shaderHeaderSize * 1, // 1 for ray generation group 
+										     raytracing_properties.shaderHeaderSize,
 											 window_details.width, window_details.height, dispatch_loader);
 
 		image_barrier(command_buffers[index].get(),

@@ -47,9 +47,9 @@ void initialize_utilities(vk::PhysicalDevice s_physical_device,
 
 struct alignas(8) PushConstants
 {
-	float time;
-	float __padding;
 	float resolution[2];
+	float cursor[2];
+	float time;
 	/* Add more members here: mind the struct alignment */
 };
 
@@ -392,6 +392,46 @@ GeometryDefinition build_icosphere(float radius = 1.0f, const glm::vec3& center 
 		8,  6,  7,
 		9,  8,  1
 	};
+
+	return GeometryDefinition{ vertices, normals, indices };
+}
+
+GeometryDefinition build_sphere(size_t u_divisions = 24, size_t v_divisions = 24, float radius = 1.0f, const glm::vec3& center = { 0.0f, 0.0f, 0.0f })
+{
+	std::vector<glm::vec3> vertices;
+	std::vector<glm::vec3> normals;
+	for (int i = 0; i <= v_divisions; ++i)
+	{
+		float v = i / static_cast<float>(v_divisions);		// Fraction along the v-axis, 0..1
+		float phi = v * glm::pi<float>();					// Vertical angle, 0..pi
+
+		for (int j = 0; j <= u_divisions; ++j)
+		{
+			float u = j / static_cast<float>(u_divisions);	// Fraction along the u-axis, 0..1
+			float theta = u * (glm::pi<float>() * 2.0f);	// Rotational angle, 0..2 * pi
+
+			// Spherical to Cartesian coordinates
+			float x = cosf(theta) * sinf(phi);
+			float y = cosf(phi);
+			float z = sinf(theta) * sinf(phi);
+			auto vertex = glm::vec3(x, y, z) * radius + center;
+
+			vertices.push_back(vertex);
+			normals.push_back(glm::normalize(vertex));
+		}
+	}
+
+	std::vector<uint32_t> indices;
+	for (int i = 0; i < u_divisions * v_divisions + u_divisions; ++i)
+	{
+		indices.push_back(i);
+		indices.push_back(static_cast<uint32_t>(i + u_divisions + 1));
+		indices.push_back(static_cast<uint32_t>(i + u_divisions));
+
+		indices.push_back(static_cast<uint32_t>(i + u_divisions + 1));
+		indices.push_back(i);
+		indices.push_back(i + 1);
+	}
 
 	return GeometryDefinition{ vertices, normals, indices };
 }
