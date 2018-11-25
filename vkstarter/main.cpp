@@ -263,7 +263,11 @@ public:
 		const std::vector<vk::DescriptorSetLayoutBinding> descriptor_set_layout_bindings = 
 		{ 
 			vk::DescriptorSetLayoutBinding{ 0, vk::DescriptorType::eAccelerationStructureNVX, 1, vk::ShaderStageFlagBits::eRaygenNVX }, 
-			vk::DescriptorSetLayoutBinding{ 1, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eRaygenNVX } 
+			vk::DescriptorSetLayoutBinding{ 1, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eRaygenNVX },
+			
+			// There are 3 descriptors at binding #2 and #3: one for each mesh geometry (normals and primitives)
+			vk::DescriptorSetLayoutBinding{ 2, vk::DescriptorType::eStorageBuffer, 3, vk::ShaderStageFlagBits::eClosestHitNVX },
+			vk::DescriptorSetLayoutBinding{ 3, vk::DescriptorType::eStorageBuffer, 3, vk::ShaderStageFlagBits::eClosestHitNVX }
 		};
 
 		auto descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo{ {}, static_cast<uint32_t>(descriptor_set_layout_bindings.size()), descriptor_set_layout_bindings.data() };
@@ -490,7 +494,7 @@ public:
 
 		shader_binding_table_buffer = create_buffer(table_size, vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eRaytracingNVX, vk::MemoryPropertyFlagBits::eHostVisible);
 
-		// Write the shader handles into device memory (?)
+		// Write the shader handles into device memory 
 		void* ptr = device->mapMemory(shader_binding_table_buffer.device_memory.get(), 0, table_size);
 		device->getRaytracingShaderHandlesNVX(pipeline.get(), 0, number_of_groups, table_size, ptr, dispatch_loader);
 		device->unmapMemory(shader_binding_table_buffer.device_memory.get());
@@ -502,10 +506,12 @@ public:
 		scene.initialize();
 
 		GeometryDefinition geom_0 = build_sphere();
-		GeometryDefinition geom_1 = build_rect(4.0f, 4.0f, { 0.0f, 1.0f, 0.0f });
+		GeometryDefinition geom_1 = build_sphere(24, 24, 0.5f, { 1.5f, 0.5f, -1.5f });
+		GeometryDefinition geom_2 = build_rect(4.0f, 4.0f, { 0.0f, 1.0f, 0.0f });
 		
 		scene.add_geometry(geom_0);
 		scene.add_geometry(geom_1);
+		scene.add_geometry(geom_2);
 	}
 
 	void initialize_descriptor_set()
@@ -514,7 +520,10 @@ public:
 		const std::vector<vk::DescriptorPoolSize> pool_sizes =
 		{
 			vk::DescriptorPoolSize{ vk::DescriptorType::eAccelerationStructureNVX, 1 },
-			vk::DescriptorPoolSize{ vk::DescriptorType::eStorageImage, 1 }
+			vk::DescriptorPoolSize{ vk::DescriptorType::eStorageImage, 1 },
+
+			// Number of geometry meshes * 2
+			vk::DescriptorPoolSize{ vk::DescriptorType::eStorageBuffer, static_cast<uint32_t>(scene.get_primitive_buffers().size()) * 2 } 
 		};
 
 		const uint32_t max_sets = 1;
@@ -546,8 +555,41 @@ public:
 		auto write_descriptor_1 = vk::WriteDescriptorSet{ descriptor_set.get(), 1, 0, 1, vk::DescriptorType::eStorageImage };
 		write_descriptor_1.setPImageInfo(&descriptor_image_info);
 
+		// Descriptor #3: storage buffers for mesh normals
+		std::vector<vk::DescriptorBufferInfo> normal_buffer_infos;
+		for (size_t i = 0; i < scene.get_normal_buffers().size(); ++i)
+		{
+			normal_buffer_infos.push_back(vk::DescriptorBufferInfo{ scene.get_normal_buffers()[i].inner.get(), 0, VK_WHOLE_SIZE });
+		}
+
+		auto write_descriptor_2 = vk::WriteDescriptorSet{ 
+			descriptor_set.get(), 
+			2, 
+			0,
+			static_cast<uint32_t>(normal_buffer_infos.size()), 
+			vk::DescriptorType::eStorageBuffer, 
+			nullptr,
+			normal_buffer_infos.data() };
+
+
+		// Descriptor #4: storage buffers for mesh primitives
+		std::vector<vk::DescriptorBufferInfo> primitive_buffer_infos;
+		for (size_t i = 0; i < scene.get_primitive_buffers().size(); ++i)
+		{
+			primitive_buffer_infos.push_back(vk::DescriptorBufferInfo{ scene.get_primitive_buffers()[i].inner.get(), 0, VK_WHOLE_SIZE });
+		}
+
+		auto write_descriptor_3 = vk::WriteDescriptorSet{ 
+			descriptor_set.get(),
+			3, 
+			0,
+			static_cast<uint32_t>(primitive_buffer_infos.size()),
+			vk::DescriptorType::eStorageBuffer,
+			nullptr,
+			primitive_buffer_infos.data() };
+
 		// Gather write structs and update
-		device->updateDescriptorSets({ write_descriptor_0, write_descriptor_1 }, {});
+		device->updateDescriptorSets({ write_descriptor_0, write_descriptor_1, write_descriptor_2, write_descriptor_3 }, {});
 		LOG_DEBUG("Wrote to descriptor set");
 #endif
 	}

@@ -10,6 +10,7 @@ public:
 	const std::vector<Buffer>& get_vertex_buffers() const { return vertex_buffers; }
 	const std::vector<Buffer>& get_normal_buffers() const { return normal_buffers; }
 	const std::vector<Buffer>& get_index_buffers() const { return index_buffers; }
+	const std::vector<Buffer>& get_primitive_buffers() const { return primitive_buffers; }
 	size_t get_number_of_instances() const { return transforms.size(); }
 
 	void initialize(size_t capacity = max_instances)
@@ -27,20 +28,27 @@ public:
 		// Describe the intended usage of these buffers
 		const auto vertex_buffer_usage = vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eRaytracingNVX;
 		const auto index_buffer_usage = vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eRaytracingNVX;
+		const auto normal_buffer_usage = vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eRaytracingNVX;
+		const auto primitive_buffer_usage = vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eRaytracingNVX;
 
 		// Create the buffers (and device memory)
 		Buffer vertex_buffer = create_buffer(sizeof(geometry_def.vertices[0]) * geometry_def.vertices.size(), vertex_buffer_usage, memory_properties);
 		Buffer index_buffer = create_buffer(sizeof(geometry_def.indices[0]) * geometry_def.indices.size(), index_buffer_usage, memory_properties);
-		LOG_DEBUG("Created vertex and index buffers");
+		Buffer normal_buffer = create_buffer(sizeof(geometry_def.normals[0]) * geometry_def.normals.size(), normal_buffer_usage, memory_properties);
+		Buffer primitive_buffer = create_buffer(sizeof(geometry_def.primitives[0]) * geometry_def.primitives.size(), primitive_buffer_usage, memory_properties);
+		LOG_DEBUG("Created vertex, normal, index, and primitive buffers");
 
 		upload(vertex_buffer, geometry_def.vertices);
+		upload(normal_buffer, geometry_def.normals);
 		upload(index_buffer, geometry_def.indices);
-		LOG_DEBUG("Uploaded vertex and index data to buffers");
+		upload(primitive_buffer, geometry_def.primitives);
+		LOG_DEBUG("Uploaded attribute data to buffers");
 
-		// Push back vertex buffers
+		// Push back buffers
 		vertex_buffers.push_back(std::move(vertex_buffer));
+		normal_buffers.push_back(std::move(normal_buffer));
 		index_buffers.push_back(std::move(index_buffer));
-		// TODO: normals...
+		primitive_buffers.push_back(std::move(primitive_buffer));
 
 		// Then, build the geometry - because we move the buffers into a vector (above), 
 		// we need to be sure to reference the buffer handles from inside the vector
@@ -168,6 +176,7 @@ private:
 	std::vector<Buffer> vertex_buffers;
 	std::vector<Buffer> normal_buffers;
 	std::vector<Buffer> index_buffers;
+	std::vector<Buffer> primitive_buffers;
 	std::vector<AccelerationStructure> bottom_levels;
 
 	static const size_t max_instances = 256;

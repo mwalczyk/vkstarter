@@ -9,10 +9,10 @@ layout(push_constant) uniform PushConstants
     vec2 resolution;
     vec2 cursor;
     float time;
-} push_constants;
+} constants;
 
-layout(set = 0, binding = 0) uniform accelerationStructureNVX acceleration_structure;
-layout(set = 0, binding = 1, rgba8) uniform image2D result_image;
+layout(set = 0, binding = BINDING_ACCELERATION_STRUCTURE) uniform accelerationStructureNVX acceleration_structure;
+layout(set = 0, binding = BINDING_STORAGE_IMAGE, rgba8) uniform image2D result_image;
 
 layout(location = RAY_PAYLOAD_LOC_PRI) rayPayloadNVX RayPayloadPri payload_pri;
 layout(location = RAY_PAYLOAD_LOC_SEC) rayPayloadNVX RayPayloadSec payload_sec;
@@ -23,19 +23,20 @@ layout(location = RAY_PAYLOAD_LOC_SEC) rayPayloadNVX RayPayloadSec payload_sec;
 //      -X ------ +X
 //            |
 //          + Y
+//
+// Also, -Z is back and +Z is front
 const vec3 camera_lookat = origin;
 const float fov = 45.0f;
 
-vec3 light_position = { sin(push_constants.time) * 2.0, -3.0, cos(push_constants.time) * 2.0 }; 
+vec3 light_position = { sin(constants.time) * 2.0, -3.0, cos(constants.time) * 2.0 }; 
 
 #ifdef CURSOR_CONTROLS
-    float x = (push_constants.cursor.x * 2.0 - 1.0) * MOTION_RANGE;
-    float y = (push_constants.cursor.y * 2.0 - 1.0) * MOTION_RANGE;
+    float x = (constants.cursor.x * 2.0 - 1.0) * MOTION_RANGE;
+    float y = (constants.cursor.y * 2.0 - 1.0) * MOTION_RANGE;
     vec3 camera_position = { x, y, -5.0f };
 #else
     vec3 camera_position = { 0.0f, 0.0f, -5.0f };
 #endif
-
 
 vec3 find_ray_direction(in vec2 screen_uv, float aspect_ratio) 
 {
@@ -59,67 +60,90 @@ void main()
     vec2 uv = vec2(gl_LaunchIDNVX.xy) / vec2(gl_LaunchSizeNVX.xy - 1);
     uv = uv * 2.0f - 1.0f;
 
-    const float aspect_ratio = push_constants.resolution.x / push_constants.resolution.y;
-    
+    const float aspect_ratio = constants.resolution.x / constants.resolution.y;
+    const uint shader_binding_table_record_stride = 0;
+    const float t_min = 0.0f;
+    const float t_max = 25.0f;
+    const float bounce_offset = 0.005f;
+
+    // Initial ray origin and direction are derived from the current uv-coords
     vec3 ray_direction = find_ray_direction(uv, aspect_ratio); 
     vec3 ray_origin = camera_position;
+    vec3 final_color = black;
 
-    const uint shader_binding_table_record_stride = 0;
-
-    traceNVX(acceleration_structure,
+    for (uint i = 0u; i < MAX_RECURSION_DEPTH; ++i)
+    {
+        traceNVX(acceleration_structure,
              gl_RayFlagsNoneNVX,    // ray flags
              0xFF,                  // cull mask
              HIT_SHADER_PRI,
              shader_binding_table_record_stride,
              MISS_SHADER_PRI,
              ray_origin,
-             0.0f,                  // tmin
+             t_min,
              ray_direction,
-             10.0f,                 // tmax
+             t_max,
              RAY_PAYLOAD_LOC_PRI);
 
-    vec3 final_color = { 0.0f, 0.0f, 0.0f };
-
-    if (payload_pri.distance < 0.0f)
-    {
-        // No hit
-        final_color += payload_pri.color;
-    }
-    else
-    {
-        // Shoot secondary shadow ray
-        vec3 shadow_origin = ray_origin + ray_direction * payload_pri.distance;
-        shadow_origin += payload_pri.normal * 0.001f;
-
-        vec3 shadow_direction =  normalize(light_position);
-
-        traceNVX(acceleration_structure,
-                 gl_RayFlagsNoneNVX | gl_RayFlagsTerminateOnFirstHitNVX,    
-                 0xFF,                 
-                 HIT_SHADER_SEC,
-                 shader_binding_table_record_stride,
-                 MISS_SHADER_SEC,
-                 shadow_origin,
-                 0.0f,                  
-                 shadow_direction,
-                 10.0f,                 
-                 RAY_PAYLOAD_LOC_SEC);
-
-        const float ambient = 0.1f;
-        vec3 shaded_color = payload_pri.normal * 0.5f + 0.5f;
-        
-        if (payload_sec.distance > 0.0f)
+        // There were no intersections: simply accumulate the background color
+        if (payload_pri.distance < 0.0f) 
         {
-            // The shadow ray intersected geometry
-            final_color += shaded_color * ambient;
+            final_color += payload_pri.color;
+            break;
         }
-        else
+        // There was an intersection: apply shading and (potentially) recurse
+        else 
         {
-            // The shadow ray didn't hit anything - this pixel is lit
-            final_color += shaded_color * max(ambient, dot(payload_pri.normal, normalize(light_position)));
+            // Reflective surfaces (just the sphere for now)
+            if (payload_pri.object_id == 0.0f)// || payload_pri.object_id == 1.0f) 
+            {
+                // Update ray parameters
+                ray_origin = ray_origin + ray_direction * payload_pri.distance;
+                ray_origin += payload_pri.normal * bounce_offset;
+
+                ray_direction = reflect(ray_direction, payload_pri.normal);
+            }
+            // Lambertian (diffuse) surfaces
+            else 
+            {
+                // Shoot secondary shadow ray
+                vec3 shadow_origin = ray_origin + ray_direction * payload_pri.distance;
+                shadow_origin += payload_pri.normal * bounce_offset;
+
+                vec3 shadow_direction =  normalize(light_position);
+
+                traceNVX(acceleration_structure,
+                         gl_RayFlagsNoneNVX | gl_RayFlagsTerminateOnFirstHitNVX,    
+                         0xFF,                 
+                         HIT_SHADER_SEC,
+                         shader_binding_table_record_stride,
+                         MISS_SHADER_SEC,
+                         shadow_origin,
+                         t_min,           
+                         shadow_direction,
+                         t_max,            
+                         RAY_PAYLOAD_LOC_SEC);
+                
+                if (payload_sec.distance > 0.0f)
+                {
+                    // The shadow ray intersected geometry - this pixel is in shadow
+                    final_color += payload_pri.color * AMBIENT_CONTRIBUTION;
+                }
+                else
+                {
+                    // The shadow ray didn't hit anything - this pixel is fully lit
+                    final_color += payload_pri.color * max(AMBIENT_CONTRIBUTION, dot(payload_pri.normal, normalize(light_position)));
+                }
+                
+                // Don't recurse after tracing a shadow ray
+                break;
+            }
+
+
         }
     }
-    
+
+    gamma(final_color);
 
     imageStore(result_image, ivec2(gl_LaunchIDNVX.xy), vec4(final_color, 1.0f));
 }

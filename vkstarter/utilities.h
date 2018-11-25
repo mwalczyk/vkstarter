@@ -293,8 +293,9 @@ void single_time_commands(std::function<void(vk::CommandBuffer)> func)
 struct GeometryDefinition
 {
 	std::vector<glm::vec3> vertices;
-	std::vector<glm::vec3> normals;
+	std::vector<glm::vec4> normals;
 	std::vector<uint32_t> indices;
+	std::vector<glm::uvec4> primitives;
 
 	void transform(const glm::mat3& matrix)
 	{
@@ -305,7 +306,7 @@ struct GeometryDefinition
 
 		for (auto& n : normals)
 		{
-			n = matrix * n;
+			// TODO: n = matrix * n;
 		}
 	}
 };
@@ -325,8 +326,8 @@ GeometryDefinition build_rect(float width = 1.0f, float height = 1.0f, const glm
 		v += center;
 	}
 
-	std::vector<glm::vec3> normals;
-	normals.resize(vertices.size(), { 0.0f, 0.0f, 1.0f });
+	std::vector<glm::vec4> normals;
+	normals.resize(vertices.size(), { 0.0f, -1.0f, 0.0f, 0.0f }); // Remember -y is up
 
 	std::vector<uint32_t> indices =
 	{
@@ -334,7 +335,13 @@ GeometryDefinition build_rect(float width = 1.0f, float height = 1.0f, const glm
 		0, 3, 2  // Second triangle
 	};
 
-	return GeometryDefinition{ vertices, normals, indices };
+	std::vector<glm::uvec4> primitives;
+	for (size_t i = 0; i < indices.size(); i += 3)
+	{
+		primitives.push_back({ indices[i + 0], indices[i + 1], indices[i + 2], 0 });
+	}
+
+	return GeometryDefinition{ vertices, normals, indices, primitives };
 }
 
 GeometryDefinition build_icosphere(float radius = 1.0f, const glm::vec3& center = { 0.0f, 0.0f, 0.0f })
@@ -360,14 +367,18 @@ GeometryDefinition build_icosphere(float radius = 1.0f, const glm::vec3& center 
 
 	for (auto &v : vertices)
 	{
-		v = glm::normalize(v) * radius + center;
+		v = glm::normalize(v) * radius;
 	}
 
 	size_t vertex_index = 0;
-	std::vector<glm::vec3> normals;
+	std::vector<glm::vec4> normals;
 	normals.resize(vertices.size());
+	std::generate(normals.begin(), normals.end(), [&] { return glm::vec4{ glm::normalize(vertices[vertex_index]), 0.0f }; }); // W-coordinate is not used
 
-	std::generate(normals.begin(), normals.end(), [&] { return glm::normalize(vertices[vertex_index]); });
+	for (auto &v : vertices)
+	{
+		v += center;
+	}
 
 	std::vector<uint32_t> indices =
 	{
@@ -393,13 +404,19 @@ GeometryDefinition build_icosphere(float radius = 1.0f, const glm::vec3& center 
 		9,  8,  1
 	};
 
-	return GeometryDefinition{ vertices, normals, indices };
+	std::vector<glm::uvec4> primitives;
+	for (size_t i = 0; i < indices.size(); i += 3)
+	{
+		primitives.push_back({ indices[i + 0], indices[i + 1], indices[i + 2], 0 }); // W-coordinate is not used
+	}
+
+	return GeometryDefinition{ vertices, normals, indices, primitives };
 }
 
 GeometryDefinition build_sphere(size_t u_divisions = 24, size_t v_divisions = 24, float radius = 1.0f, const glm::vec3& center = { 0.0f, 0.0f, 0.0f })
 {
 	std::vector<glm::vec3> vertices;
-	std::vector<glm::vec3> normals;
+	std::vector<glm::vec4> normals;
 	for (int i = 0; i <= v_divisions; ++i)
 	{
 		float v = i / static_cast<float>(v_divisions);		// Fraction along the v-axis, 0..1
@@ -414,11 +431,17 @@ GeometryDefinition build_sphere(size_t u_divisions = 24, size_t v_divisions = 24
 			float x = cosf(theta) * sinf(phi);
 			float y = cosf(phi);
 			float z = sinf(theta) * sinf(phi);
-			auto vertex = glm::vec3(x, y, z) * radius + center;
+			auto vertex = glm::vec3(x, y, z) * radius;
 
 			vertices.push_back(vertex);
-			normals.push_back(glm::normalize(vertex));
+			normals.push_back({ glm::normalize(vertex), 0.0f }); 
 		}
+	}
+
+	// Translate the sphere's vertices after creating normals
+	for (auto& v : vertices)
+	{
+		v += center;
 	}
 
 	std::vector<uint32_t> indices;
@@ -433,7 +456,13 @@ GeometryDefinition build_sphere(size_t u_divisions = 24, size_t v_divisions = 24
 		indices.push_back(i + 1);
 	}
 
-	return GeometryDefinition{ vertices, normals, indices };
+	std::vector<glm::uvec4> primitives;
+	for (size_t i = 0; i < indices.size(); i += 3)
+	{
+		primitives.push_back({ indices[i + 0], indices[i + 1], indices[i + 2], 0 }); 
+	}
+
+	return GeometryDefinition{ vertices, normals, indices, primitives };
 }
 
 glm::mat4x3 get_identity_matrix()

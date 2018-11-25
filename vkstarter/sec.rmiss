@@ -8,5 +8,5 @@ layout(location = RAY_PAYLOAD_LOC_SEC) rayPayloadInNVX RayPayloadSec payload;
 
 void main() 
 {
-    payload.distance = -1.0f;
+    payload.distance = MISS_DISTANCE;
 }
