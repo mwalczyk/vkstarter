@@ -343,7 +343,7 @@ public:
 
 	void initialize_pipeline()
 	{
-		const std::string path_prefix = "";
+		const std::string path_prefix = "shaders/";
 		const char* entry_point = "main";
 
 		// Create a pipeline layout (this can be shared across the graphics and raytracing pipelines)

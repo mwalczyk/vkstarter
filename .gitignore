@@ -6,7 +6,7 @@
 # Custom
 build/
 third_party/
-vkstarter/*.spv
+vkstarter/shaders/*.spv
 
 # User-specific files
 *.suo

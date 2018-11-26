@@ -13,9 +13,9 @@
 #include "glfw3.h"
 #include "glfw3native.h"
 
-#include "glm.hpp"
-#include "gtc/type_ptr.hpp"
-#include "gtc/random.hpp"
+#include "glm/glm.hpp"
+#include "glm/gtc/type_ptr.hpp"
+#include "glm/gtc/random.hpp"
 
 #define VK_USE_PLATFORM_WIN32_KHR
 #include "vulkan/vulkan.hpp"
