@@ -33,7 +33,7 @@ vec3 light_position = { sin(constants.time) * 2.0, -3.0, cos(constants.time) * 2
 #ifdef CURSOR_CONTROLS
     float x = (constants.cursor.x * 2.0 - 1.0) * MOTION_RANGE;
     float y = (constants.cursor.y * 2.0 - 1.0) * MOTION_RANGE;
-    vec3 camera_position = { x, y, -5.0f };
+    vec3 camera_position = { x, y, -8.0f };
 #else
     vec3 camera_position = { 0.0f, 0.0f, -5.0f };
 #endif
@@ -64,7 +64,7 @@ void main()
     const uint shader_binding_table_record_stride = 0;
     const float t_min = 0.0f;
     const float t_max = 25.0f;
-    const float bounce_offset = 0.005f;
+    const float bounce_offset = 0.001f;
 
     // Initial ray origin and direction are derived from the current uv-coords
     vec3 ray_direction = find_ray_direction(uv, aspect_ratio); 
@@ -94,22 +94,42 @@ void main()
         // There was an intersection: apply shading and (potentially) recurse
         else 
         {
-            // Reflective surfaces (just the sphere for now)
-            if (payload_pri.object_id == 0.0f)// || payload_pri.object_id == 1.0f) 
-            {
-                // Update ray parameters
-                ray_origin = ray_origin + ray_direction * payload_pri.distance;
-                ray_origin += payload_pri.normal * bounce_offset;
+            int material_type = int(mod(payload_pri.instance_id, 3));
 
+            // The floor plane is always Lambertian 
+            if (payload_pri.object_id == 1.0f) material_type = 2;
+
+            const vec3 hit_location = ray_origin + ray_direction * payload_pri.distance;
+
+            if (material_type == MATERIAL_REFLECTIVE)
+            {
+                ray_origin = hit_location + payload_pri.normal * bounce_offset;
                 ray_direction = reflect(ray_direction, payload_pri.normal);
             }
-            // Lambertian (diffuse) surfaces
+            else if (material_type == MATERIAL_REFRACTIVE)
+            {
+                const float ior = 1.0f / 1.31f;
+
+                vec3 refracted_normal = payload_pri.normal;
+                float refracted_eta;
+
+                if (dot(payload_pri.normal, ray_direction) > 0.0f) 
+                {
+                    refracted_normal = -payload_pri.normal;
+                    refracted_eta = 1.0f / ior;
+                } 
+                else 
+                {
+                    refracted_normal = payload_pri.normal;
+                    refracted_eta = ior;
+                }
+
+                ray_origin = hit_location + ray_direction * bounce_offset;
+                ray_direction = refract(ray_direction, refracted_normal, refracted_eta);
+            }
             else 
             {
-                // Shoot secondary shadow ray
-                vec3 shadow_origin = ray_origin + ray_direction * payload_pri.distance;
-                shadow_origin += payload_pri.normal * bounce_offset;
-
+                vec3 shadow_origin = hit_location + payload_pri.normal * bounce_offset;
                 vec3 shadow_direction =  normalize(light_position);
 
                 traceNVX(acceleration_structure,

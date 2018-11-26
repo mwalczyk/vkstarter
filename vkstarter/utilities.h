@@ -15,6 +15,7 @@
 
 #include "glm.hpp"
 #include "gtc/type_ptr.hpp"
+#include "gtc/random.hpp"
 
 #define VK_USE_PLATFORM_WIN32_KHR
 #include "vulkan/vulkan.hpp"
@@ -59,6 +60,13 @@ struct WindowDetails
 	uint32_t height;
 	std::string name;
 	GLFWwindow* window;
+};
+
+struct GPUDetails
+{
+	std::vector<vk::QueueFamilyProperties> queues;
+	vk::PhysicalDeviceFeatures features;
+	vk::PhysicalDeviceProperties properties;
 };
 
 struct SurfaceDetails
@@ -482,5 +490,23 @@ glm::mat4x3 get_translation_matrix(const glm::vec3& translate)
 		1.0f, 0.0f, 0.0f, translate.x,
 		0.0f, 1.0f, 0.0f, translate.y,
 		0.0f, 0.0f, 1.0f, translate.z
+	};
+}
+
+glm::mat4x3 get_scale_matrix(const glm::vec3& scale)
+{
+	return glm::mat4x3{
+		scale.x, 0.0f, 0.0f, 0.0f,
+		0.0f, scale.y, 0.0f, 0.0f,
+		0.0f, 0.0f, scale.z, 0.0f
+	};
+}
+
+glm::mat4x3 get_transformation_matrix(const glm::vec3& scale, const glm::vec3& translate)
+{
+	return glm::mat4x3{
+		scale.x, 0.0f, 0.0f, translate.x,
+		0.0f, scale.y, 0.0f, translate.y,
+		0.0f, 0.0f, scale.z, translate.z
 	};
 }

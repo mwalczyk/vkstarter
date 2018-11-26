@@ -78,21 +78,17 @@ public:
 		initialize_swapchain();
 		initialize_render_pass();
 		initialize_command_pool();
-		initialize_descriptor_set_layout();
-		initialize_pipeline();
 		initialize_framebuffers();
 		initialize_command_buffers();
 		initialize_synchronization_primitives();
+		initialize_scene();
+		initialize_descriptor_set_layout();
+		initialize_pipeline();
+		initialize_descriptor_set();
 #if defined(RAYTRACING)
-		// The scene must be created after command pool allocation, since it submits a series
-		// of command buffers to build the acceleration structures
 		initialize_offscreen_image();
 		initialize_shader_binding_table();
-		
 #endif
-		initialize_scene();
-		initialize_descriptor_set();
-
 		// Write descriptor set
 		update_descriptor_sets();
 	}
@@ -141,7 +137,7 @@ public:
 		assert(!physical_devices.empty());
 		physical_device = physical_devices[0];
 
-		auto queue_family_properties = physical_device.getQueueFamilyProperties();
+		gpu_details.queues = physical_device.getQueueFamilyProperties();
 
 		// Find a queue that supports graphics operations
 		const float priority = 0.0f;
@@ -149,7 +145,7 @@ public:
 		auto queue_create_info = vk::DeviceQueueCreateInfo{}
 			.setPQueuePriorities(&priority)
 			.setQueueCount(1)
-			.setQueueFamilyIndex(static_cast<uint32_t>(std::distance(queue_family_properties.begin(), std::find_if(queue_family_properties.begin(), queue_family_properties.end(), predicate))));
+			.setQueueFamilyIndex(static_cast<uint32_t>(std::distance(gpu_details.queues.begin(), std::find_if(gpu_details.queues.begin(), gpu_details.queues.end(), predicate))));
 		LOG_DEBUG("Using queue family at index [ " << queue_create_info.queueFamilyIndex << " ], which supports graphics operations");
 
 		// Save the index of the chosen queue family
@@ -157,11 +153,13 @@ public:
 
 		// Enable any "special" device features that we might need - `vertexPipelineStoresAndAtomics`
 		// is required for the ray generation shader
-		vk::PhysicalDeviceFeatures physical_device_features;
-		physical_device_features.vertexPipelineStoresAndAtomics = true;
+		gpu_details.features.vertexPipelineStoresAndAtomics = true;
 		// Examples...
 		//physical_device_features.geometryShader = true;
 		//physical_device_features.imageCubeArray = true;
+
+		gpu_details.properties = physical_device.getProperties();
+		LOG_DEBUG("Using physical device with name: " << gpu_details.properties.deviceName);
 
 		// Then, we construct a logical device around the chosen physical device
 		const std::vector<const char*> device_extensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_NVX_RAYTRACING_EXTENSION_NAME };
@@ -170,7 +168,7 @@ public:
 			.setQueueCreateInfoCount(1)
 			.setPpEnabledExtensionNames(device_extensions.data())
 			.setEnabledExtensionCount(static_cast<uint32_t>(device_extensions.size()))
-			.setPEnabledFeatures(&physical_device_features);
+			.setPEnabledFeatures(&gpu_details.features);
 
 		device = physical_device.createDeviceUnique(device_create_info);
 
@@ -257,17 +255,86 @@ public:
 		render_pass = device->createRenderPassUnique(render_pass_create_info);
 	}
 
+	void initialize_framebuffers()
+	{
+		framebuffers.clear();
+
+		auto framebuffer_create_info = vk::FramebufferCreateInfo{ {}, render_pass.get(), 1, {}, window_details.width, window_details.height, 1 };
+		for (const auto& image_view : swapchain_image_views)
+		{
+			framebuffer_create_info.setPAttachments(&image_view.get());
+			framebuffers.push_back(device->createFramebufferUnique(framebuffer_create_info));
+		}
+		LOG_DEBUG("Created [ " << framebuffers.size() << " ] framebuffers");
+	}
+
+	void initialize_command_pool()
+	{
+		command_pool = device->createCommandPoolUnique(vk::CommandPoolCreateInfo{ vk::CommandPoolCreateFlagBits::eResetCommandBuffer, queue_family_index });
+		LOG_DEBUG("Successfully created command pool");
+
+		// Save Vulkan handles into static variables in utilities header
+		initialize_utilities(physical_device, device.get(), queue, dispatch_loader, command_pool.get());
+	}
+
+	void initialize_command_buffers()
+	{
+		command_buffers = device->allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo{ command_pool.get(), vk::CommandBufferLevel::ePrimary, static_cast<uint32_t>(framebuffers.size()) });
+		LOG_DEBUG("Allocated [ " << command_buffers.size() << " ] command buffers");
+	}
+
+	void initialize_synchronization_primitives()
+	{
+		semaphore_image_available = device->createSemaphoreUnique({});
+		sempahore_render_finished = device->createSemaphoreUnique({});
+
+		for (size_t i = 0; i < command_buffers.size(); ++i)
+		{			
+			// Create each fence in a signaled state, so that the first call to `waitForFences` in the draw loop doesn't throw any errors
+			fences.push_back(device->createFenceUnique({ vk::FenceCreateFlagBits::eSignaled }));
+		}
+	}
+
+	void initialize_scene()
+	{
+		scene.initialize();
+
+		const size_t number_of_spheres = 20;
+		const float radius = 3.0f;
+		GeometryDefinition geom_0 = build_sphere();
+		GeometryDefinition geom_1 = build_rect(4.0f, 4.0f);
+		
+		std::vector<glm::mat4x3> instance_transforms;
+		for (size_t i = 0; i < number_of_spheres; i++)
+		{
+			auto r = glm::linearRand<float>(0.1f, 0.5f);
+			auto scale = glm::vec3{ r };
+
+			float pct = i / static_cast<float>(number_of_spheres);
+			float incr = pct * glm::pi<float>() * 2.0f;
+			auto translate = glm::vec3{ sinf(incr) * radius, -r, cosf(incr) * radius };
+
+			instance_transforms.push_back(get_transformation_matrix(scale, translate));
+		}
+
+		scene.add_geometry(geom_0, instance_transforms );
+		scene.add_geometry(geom_1);
+	}
+	
 	void initialize_descriptor_set_layout()
 	{
+		// The number of storage buffers at binding #2 and #3 is determined by the number of unique geometries in the scene
+		uint32_t storage_buffer_count = scene.get_number_of_unique_geometries();
+
 		// Create a descriptor set layout that accommodates 2 descriptors: an acceleration structure and a storage image
-		const std::vector<vk::DescriptorSetLayoutBinding> descriptor_set_layout_bindings = 
-		{ 
-			vk::DescriptorSetLayoutBinding{ 0, vk::DescriptorType::eAccelerationStructureNVX, 1, vk::ShaderStageFlagBits::eRaygenNVX }, 
+		const std::vector<vk::DescriptorSetLayoutBinding> descriptor_set_layout_bindings =
+		{
+			vk::DescriptorSetLayoutBinding{ 0, vk::DescriptorType::eAccelerationStructureNVX, 1, vk::ShaderStageFlagBits::eRaygenNVX },
 			vk::DescriptorSetLayoutBinding{ 1, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eRaygenNVX },
-			
+
 			// There are 3 descriptors at binding #2 and #3: one for each mesh geometry (normals and primitives)
-			vk::DescriptorSetLayoutBinding{ 2, vk::DescriptorType::eStorageBuffer, 3, vk::ShaderStageFlagBits::eClosestHitNVX },
-			vk::DescriptorSetLayoutBinding{ 3, vk::DescriptorType::eStorageBuffer, 3, vk::ShaderStageFlagBits::eClosestHitNVX }
+			vk::DescriptorSetLayoutBinding{ 2, vk::DescriptorType::eStorageBuffer, storage_buffer_count, vk::ShaderStageFlagBits::eClosestHitNVX },
+			vk::DescriptorSetLayoutBinding{ 3, vk::DescriptorType::eStorageBuffer, storage_buffer_count, vk::ShaderStageFlagBits::eClosestHitNVX }
 		};
 
 		auto descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo{ {}, static_cast<uint32_t>(descriptor_set_layout_bindings.size()), descriptor_set_layout_bindings.data() };
@@ -318,20 +385,20 @@ public:
 
 		// Gather shader stage create infos
 		auto rgen_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eRaygenNVX, rgen_module.get(), entry_point };
-		
+
 		auto pri_chit_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eClosestHitNVX, pri_chit_module.get(), entry_point };
 		auto sec_chit_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eClosestHitNVX, sec_chit_module.get(), entry_point };
-		
+
 		auto pri_miss_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eMissNVX, pri_miss_module.get(), entry_point };
 		auto sec_miss_stage_create_info = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eMissNVX, sec_miss_module.get(), entry_point };
 
-		const std::vector<vk::PipelineShaderStageCreateInfo> shader_stage_create_infos = 
-		{ 
-			rgen_stage_create_info, 
-			pri_chit_stage_create_info, 
+		const std::vector<vk::PipelineShaderStageCreateInfo> shader_stage_create_infos =
+		{
+			rgen_stage_create_info,
+			pri_chit_stage_create_info,
 			sec_chit_stage_create_info,
 			pri_miss_stage_create_info,
-			sec_miss_stage_create_info 
+			sec_miss_stage_create_info
 		};
 
 		// Group 0: ray generation
@@ -382,30 +449,30 @@ public:
 			.setLineWidth(1.0f);
 
 		auto multisample_state_create_info = vk::PipelineMultisampleStateCreateInfo{};
-		
+
 		auto color_blend_attachment_state = vk::PipelineColorBlendAttachmentState{}
-			.setColorWriteMask(vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA);
+		.setColorWriteMask(vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA);
 
 		auto color_blend_state_create_info = vk::PipelineColorBlendStateCreateInfo{}
 			.setPAttachments(&color_blend_attachment_state)
 			.setAttachmentCount(1);
 
 		// Build a graphics pipeline object
-		auto graphics_pipeline_create_info = vk::GraphicsPipelineCreateInfo{ 
-			{}, 
+		auto graphics_pipeline_create_info = vk::GraphicsPipelineCreateInfo{
+			{},
 			static_cast<uint32_t>(shader_stage_create_infos.size()),
-			shader_stage_create_infos.data(), 
+			shader_stage_create_infos.data(),
 			&vertex_input_state_create_info,
-			&input_assembly_create_info, 
+			&input_assembly_create_info,
 			nullptr, /* Add tessellation state here */
-			&viewport_state_create_info, 
+			&viewport_state_create_info,
 			&rasterization_state_create_info,
-			&multisample_state_create_info, 
+			&multisample_state_create_info,
 			nullptr, /* Add depth stencil state here */
-			&color_blend_state_create_info, 
-			nullptr, /* Add dynamic state here */ 
-			pipeline_layout.get(), 
-			render_pass.get() 
+			&color_blend_state_create_info,
+			nullptr, /* Add dynamic state here */
+			pipeline_layout.get(),
+			render_pass.get()
 		};
 
 		pipeline = device->createGraphicsPipelineUnique({}, graphics_pipeline_create_info);
@@ -413,44 +480,25 @@ public:
 #endif
 	}
 
-	void initialize_framebuffers()
+	void initialize_descriptor_set()
 	{
-		framebuffers.clear();
-
-		auto framebuffer_create_info = vk::FramebufferCreateInfo{ {}, render_pass.get(), 1, {}, window_details.width, window_details.height, 1 };
-		for (const auto& image_view : swapchain_image_views)
+		// First, create the descriptor pool
+		const std::vector<vk::DescriptorPoolSize> pool_sizes =
 		{
-			framebuffer_create_info.setPAttachments(&image_view.get());
-			framebuffers.push_back(device->createFramebufferUnique(framebuffer_create_info));
-		}
-		LOG_DEBUG("Created [ " << framebuffers.size() << " ] framebuffers");
-	}
+			vk::DescriptorPoolSize{ vk::DescriptorType::eAccelerationStructureNVX, 1 },
+			vk::DescriptorPoolSize{ vk::DescriptorType::eStorageImage, 1 },
 
-	void initialize_command_pool()
-	{
-		command_pool = device->createCommandPoolUnique(vk::CommandPoolCreateInfo{ vk::CommandPoolCreateFlagBits::eResetCommandBuffer, queue_family_index });
-		LOG_DEBUG("Successfully created command pool");
+			// Number of unique geometries * 2 (one for normals, one for primitives)
+			vk::DescriptorPoolSize{ vk::DescriptorType::eStorageBuffer, static_cast<uint32_t>(scene.get_number_of_unique_geometries() * 2) }
+		};
 
-		// Save Vulkan handles into static variables in utilities header
-		initialize_utilities(physical_device, device.get(), queue, dispatch_loader, command_pool.get());
-	}
+		const uint32_t max_sets = 1;
+		descriptor_pool = device->createDescriptorPoolUnique(vk::DescriptorPoolCreateInfo{ {}, max_sets, static_cast<uint32_t>(pool_sizes.size()), pool_sizes.data() });
+		LOG_DEBUG("Successfully created descriptor pool");
 
-	void initialize_command_buffers()
-	{
-		command_buffers = device->allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo{ command_pool.get(), vk::CommandBufferLevel::ePrimary, static_cast<uint32_t>(framebuffers.size()) });
-		LOG_DEBUG("Allocated [ " << command_buffers.size() << " ] command buffers");
-	}
-
-	void initialize_synchronization_primitives()
-	{
-		semaphore_image_available = device->createSemaphoreUnique({});
-		sempahore_render_finished = device->createSemaphoreUnique({});
-
-		for (size_t i = 0; i < command_buffers.size(); ++i)
-		{			
-			// Create each fence in a signaled state, so that the first call to `waitForFences` in the draw loop doesn't throw any errors
-			fences.push_back(device->createFenceUnique({ vk::FenceCreateFlagBits::eSignaled }));
-		}
+		// Then, allocate descriptor sets
+		descriptor_set = std::move(device->allocateDescriptorSetsUnique(vk::DescriptorSetAllocateInfo{ descriptor_pool.get(), 1, &descriptor_set_layout.get() })[0]);
+		LOG_DEBUG("Successfully allocated descriptor set from descriptor pool");
 	}
 #if defined(RAYTRACING)
 	void initialize_offscreen_image()
@@ -501,40 +549,6 @@ public:
 		LOG_DEBUG("Successfully created shader binding table");
 	}
 #endif
-	void initialize_scene()
-	{
-		scene.initialize();
-
-		GeometryDefinition geom_0 = build_sphere();
-		GeometryDefinition geom_1 = build_sphere(24, 24, 0.5f, { 1.5f, 0.5f, -1.5f });
-		GeometryDefinition geom_2 = build_rect(4.0f, 4.0f, { 0.0f, 1.0f, 0.0f });
-		
-		scene.add_geometry(geom_0);
-		scene.add_geometry(geom_1);
-		scene.add_geometry(geom_2);
-	}
-
-	void initialize_descriptor_set()
-	{
-		// First, create the descriptor pool
-		const std::vector<vk::DescriptorPoolSize> pool_sizes =
-		{
-			vk::DescriptorPoolSize{ vk::DescriptorType::eAccelerationStructureNVX, 1 },
-			vk::DescriptorPoolSize{ vk::DescriptorType::eStorageImage, 1 },
-
-			// Number of geometry meshes * 2
-			vk::DescriptorPoolSize{ vk::DescriptorType::eStorageBuffer, static_cast<uint32_t>(scene.get_primitive_buffers().size()) * 2 } 
-		};
-
-		const uint32_t max_sets = 1;
-		descriptor_pool = device->createDescriptorPoolUnique(vk::DescriptorPoolCreateInfo{ {}, max_sets, static_cast<uint32_t>(pool_sizes.size()), pool_sizes.data() });
-		LOG_DEBUG("Successfully created descriptor pool");
-
-		// Then, allocate descriptor sets
-		descriptor_set = std::move(device->allocateDescriptorSetsUnique(vk::DescriptorSetAllocateInfo{ descriptor_pool.get(), 1, &descriptor_set_layout.get() })[0]);
-		LOG_DEBUG("Successfully allocated descriptor set from descriptor pool");
-	}
-
 	void update_descriptor_sets()
 	{
 #if defined(RAYTRACING)
@@ -546,44 +560,40 @@ public:
 		// - Type
 
 		// Descriptor #0: top-level acceleration structure
-		auto descriptor_accel_info = vk::DescriptorAccelerationStructureInfoNVX{ 1, &scene.get_tlas().inner.get() };
-		auto write_descriptor_0 = vk::WriteDescriptorSet{ descriptor_set.get(), 0, 0, 1, vk::DescriptorType::eAccelerationStructureNVX };
-		write_descriptor_0.setPNext(&descriptor_accel_info); // Notice that we write to pNext here!
+		auto accel_info = vk::DescriptorAccelerationStructureInfoNVX{ 1, &scene.get_tlas().inner.get() };
+		auto write_descriptor_0 = vk::WriteDescriptorSet{ 
+			descriptor_set.get(), 
+			0, 0, 1, 
+			vk::DescriptorType::eAccelerationStructureNVX };
+
+		// Notice that we write to pNext here!
+		write_descriptor_0.setPNext(&accel_info); 
 
 		// Descriptor #1: offscreen storage image
-		auto descriptor_image_info = vk::DescriptorImageInfo{ {}, offscreen_image.view.value().get(), vk::ImageLayout::eGeneral };
-		auto write_descriptor_1 = vk::WriteDescriptorSet{ descriptor_set.get(), 1, 0, 1, vk::DescriptorType::eStorageImage };
-		write_descriptor_1.setPImageInfo(&descriptor_image_info);
+		auto image_info = vk::DescriptorImageInfo{ {}, offscreen_image.view.value().get(), vk::ImageLayout::eGeneral };
+		auto write_descriptor_1 = vk::WriteDescriptorSet{ 
+			descriptor_set.get(), 
+			1, 0, 1, 
+			vk::DescriptorType::eStorageImage, 
+			&image_info };
 
 		// Descriptor #3: storage buffers for mesh normals
-		std::vector<vk::DescriptorBufferInfo> normal_buffer_infos;
-		for (size_t i = 0; i < scene.get_normal_buffers().size(); ++i)
-		{
-			normal_buffer_infos.push_back(vk::DescriptorBufferInfo{ scene.get_normal_buffers()[i].inner.get(), 0, VK_WHOLE_SIZE });
-		}
+		std::vector<vk::DescriptorBufferInfo> normal_buffer_infos = scene.get_normal_buffer_infos();
 
 		auto write_descriptor_2 = vk::WriteDescriptorSet{ 
 			descriptor_set.get(), 
-			2, 
-			0,
-			static_cast<uint32_t>(normal_buffer_infos.size()), 
+			2, 0, static_cast<uint32_t>(normal_buffer_infos.size()), 
 			vk::DescriptorType::eStorageBuffer, 
 			nullptr,
 			normal_buffer_infos.data() };
 
 
 		// Descriptor #4: storage buffers for mesh primitives
-		std::vector<vk::DescriptorBufferInfo> primitive_buffer_infos;
-		for (size_t i = 0; i < scene.get_primitive_buffers().size(); ++i)
-		{
-			primitive_buffer_infos.push_back(vk::DescriptorBufferInfo{ scene.get_primitive_buffers()[i].inner.get(), 0, VK_WHOLE_SIZE });
-		}
+		std::vector<vk::DescriptorBufferInfo> primitive_buffer_infos = scene.get_primitive_buffer_infos();
 
 		auto write_descriptor_3 = vk::WriteDescriptorSet{ 
 			descriptor_set.get(),
-			3, 
-			0,
-			static_cast<uint32_t>(primitive_buffer_infos.size()),
+			3, 0, static_cast<uint32_t>(primitive_buffer_infos.size()),
 			vk::DescriptorType::eStorageBuffer,
 			nullptr,
 			primitive_buffer_infos.data() };
@@ -596,8 +606,11 @@ public:
 
 	void record_command_buffer(uint32_t index)
 	{
-		double cursor_x, cursor_y;
-		glfwGetCursorPos(window_details.window, &cursor_x, &cursor_y);
+		if (glfwGetMouseButton(window_details.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
+		{
+			// Grab the cursor position if the mouse is pressed
+			glfwGetCursorPos(window_details.window, &cursor_x, &cursor_y);
+		}
 
 		PushConstants push_constants =
 		{
@@ -718,7 +731,11 @@ public:
 
 private:
 
+	double cursor_x = 0.0;
+	double cursor_y = 0.0;
+
 	WindowDetails window_details;
+	GPUDetails gpu_details;
 	SurfaceDetails surface_details;
 	SwapchainDetails swapchain_details;
 

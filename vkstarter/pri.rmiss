@@ -12,7 +12,7 @@ void main()
 	vec3 unit_ray_direction = normalize(gl_WorldRayDirectionNVX);
 	float t = unit_ray_direction.y * 0.5f + 0.5f;
 
-	const vec3 atmosp = { 0.0f, 0.2f, 1.0f };
+	const vec3 atmosp = { 0.4f, 0.4f, 1.0f };
 	const vec3 clouds = white;
 	vec3 sky = mix(atmosp, white, t);
 

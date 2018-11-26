@@ -26,9 +26,8 @@ void main()
     
     // Below, the value of `gl_InstanceCustomIndexNVX` corresponds to:
     //
-    // 0: sphere large
-    // 1: sphere small
-    // 2: ground plane
+    // 0: spheres
+    // 1: ground plane
     //
     // See the `Application` class for details
    
@@ -42,8 +41,9 @@ void main()
 
     vec3 interpolated_normal = normalize(barycentric_lerp(normal_0.xyz, normal_1.xyz, normal_2.xyz, barycentric_coords)); 
 
-    payload.color = (gl_InstanceCustomIndexNVX == 2) ? barycentric_coords : white;
+    payload.color = rand_vec(vec2(gl_InstanceCustomIndexNVX + 1, gl_InstanceID));
     payload.normal = interpolated_normal;
     payload.distance = gl_HitTNVX;
     payload.object_id = float(gl_InstanceCustomIndexNVX);
+    payload.instance_id = float(gl_InstanceID);
 }

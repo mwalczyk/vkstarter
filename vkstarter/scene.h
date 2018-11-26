@@ -6,12 +6,37 @@ class Scene
 {
 public:
 
+	Scene() : number_of_unique_geometries{ 0 } {}
+
 	const AccelerationStructure& get_tlas() const { return top_level; }
 	const std::vector<Buffer>& get_vertex_buffers() const { return vertex_buffers; }
 	const std::vector<Buffer>& get_normal_buffers() const { return normal_buffers; }
 	const std::vector<Buffer>& get_index_buffers() const { return index_buffers; }
 	const std::vector<Buffer>& get_primitive_buffers() const { return primitive_buffers; }
 	size_t get_number_of_instances() const { return transforms.size(); }
+	size_t get_number_of_unique_geometries() const { return number_of_unique_geometries; }
+
+	std::vector<vk::DescriptorBufferInfo> get_normal_buffer_infos() const
+	{
+		std::vector<vk::DescriptorBufferInfo> buffer_infos;
+		for (size_t i = 0; i < normal_buffers.size(); ++i)
+		{
+			buffer_infos.push_back(vk::DescriptorBufferInfo{ normal_buffers[i].inner.get(), 0, VK_WHOLE_SIZE });
+		}
+
+		return buffer_infos;
+	}
+
+	std::vector<vk::DescriptorBufferInfo> get_primitive_buffer_infos() const
+	{
+		std::vector<vk::DescriptorBufferInfo> buffer_infos;
+		for (size_t i = 0; i < primitive_buffers.size(); ++i)
+		{
+			buffer_infos.push_back(vk::DescriptorBufferInfo{ primitive_buffers[i].inner.get(), 0, VK_WHOLE_SIZE });
+		}
+
+		return buffer_infos;
+	}
 
 	void initialize(size_t capacity = max_instances)
 	{
@@ -20,7 +45,7 @@ public:
 		instances_buffer = create_buffer(instance_buffer_size, vk::BufferUsageFlagBits::eRaytracingNVX, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 	}
 
-	void add_geometry(const GeometryDefinition& geometry_def, const glm::mat4x3& transform = get_identity_matrix())
+	void add_geometry(const GeometryDefinition& geometry_def, const std::vector<glm::mat4x3>& instance_transforms = { get_identity_matrix() })
 	{
 		// Describe how the memory associated with these buffers will be accessed
 		const auto memory_properties = vk::MemoryPropertyFlagBits::eHostCoherent | vk::MemoryPropertyFlagBits::eHostVisible;
@@ -68,35 +93,39 @@ public:
 		bottom_levels.push_back(std::move(bottom_level));
 
 		// Add a new instance with the given transform and update the TLAS
-		add_instance(transform);
+		add_instance(bottom_levels.back().handle, instance_transforms);
 	}
 
 private:
 
-	void add_instance(const glm::mat4x3& transform)
+	void add_instance(uint64_t handle, const std::vector<glm::mat4x3>& instance_transforms)
 	{
-		if (geometries.size() < max_instances)
+		if (transforms.size() < max_instances)
 		{
-			size_t instance_id = geometries.size() - 1;
-
-			// Describe the instance and its transform
-			VkGeometryInstance instance;
-			std::memcpy(instance.transform, glm::value_ptr(transform), sizeof(glm::mat4x3));
-			instance.instanceId = instance_id; // Starts at 0 and increments...
-			instance.mask = 0xff;
-			instance.instanceOffset = 0;
-			instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_CULL_DISABLE_BIT_NVX;
-			instance.accelerationStructureHandle = bottom_levels.back().handle;
-
-			const std::vector<VkGeometryInstance> instances = { instance };
-
 			// Upload the transform data to the GPU
-			const size_t offset = sizeof(VkGeometryInstance) * instance_id;
+			const size_t offset = sizeof(VkGeometryInstance) * transforms.size();
+
+			std::vector<VkGeometryInstance> instances;
+
+			for (const auto& transform : instance_transforms)
+			{
+				// Describe the instance and its transform
+				VkGeometryInstance instance;
+				std::memcpy(instance.transform, glm::value_ptr(transform), sizeof(glm::mat4x3));
+				instance.instanceId = number_of_unique_geometries; // Starts at 0 and increments...
+				instance.mask = 0xff;
+				instance.instanceOffset = 0;
+				instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_CULL_DISABLE_BIT_NVX;
+				instance.accelerationStructureHandle = handle;
+				instances.push_back(instance);
+
+				// Keep track of the transform data on the CPU, as it may change and need to be
+				// re-uploaded to the GPU
+				transforms.push_back(transform);
+			}
 			upload(instances_buffer, instances, offset);
 
-			// Keep track of the transform data on the CPU, as it may change and need to be
-			// re-uploaded to the GPU
-			transforms.push_back(transform);
+			number_of_unique_geometries++;
 
 			// Update (or create) the TLAS
 			update_tlas();
@@ -180,6 +209,7 @@ private:
 	std::vector<AccelerationStructure> bottom_levels;
 
 	static const size_t max_instances = 256;
+	size_t number_of_unique_geometries;
 
 	// Updated every time a new BLAS is added (max)
 	size_t scratch_memory_size = 0; 
