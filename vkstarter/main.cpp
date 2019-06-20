@@ -311,7 +311,7 @@ public:
 	void initialize_pipeline()
 	{
 		// First, load the shader modules
-		const std::string path_prefix = "";
+		const std::string path_prefix = "../vkstarter/shaders/";
 		const std::string vs_spv_path = path_prefix + "vert.spv";
 		const std::string fs_spv_path = path_prefix + "frag.spv";
 		auto vs_module = load_spv_into_module(device, vs_spv_path);
@@ -403,7 +403,9 @@ public:
 
 	void record_command_buffer(uint32_t index)
 	{
-		const vk::ClearValue clear = std::array<float, 4>{ 0.0f, 0.0f, 0.0f, 1.0f };
+		vk::ClearValue clear;
+		clear.color = vk::ClearColorValue(std::array<float, 4>({ 0.0f, 0.0f, 0.0f, 1.0f }));
+
 		const vk::Rect2D render_area{ { 0, 0 }, swapchain_extent };
 
 		PushConstants push_constants = 		
